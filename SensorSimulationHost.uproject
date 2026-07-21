@@ -1,0 +1,19 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "AutomotiveStudio_v2.0",
+  "Category": "Simulation",
+  "Description": "Lightweight UE5 synthetic sensor dataset host.",
+  "Modules": [
+    {
+      "Name": "SensorSimulationHost",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "SensorSimulation",
+      "Enabled": true
+    }
+  ]
+}

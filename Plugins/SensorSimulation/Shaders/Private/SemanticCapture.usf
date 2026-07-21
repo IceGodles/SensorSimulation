@@ -1,0 +1,11 @@
+// 将 CustomStencil 中的 8 位语义标签直接编码到线性 RGBA8 输出。
+// 使用整数像素坐标和 Load，禁止过滤、邻域混合及任何颜色后处理。
+
+#include "/Engine/Private/ScreenPass.ush"
+#include "/Engine/Private/SceneTexturesCommon.ush"
+
+void MainPS(float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
+{
+    const uint SemanticId = CalcSceneCustomStencil(uint2(SvPosition.xy));
+    OutColor = float4(float(SemanticId) / 255.0f, 0.0f, 0.0f, 1.0f);
+}

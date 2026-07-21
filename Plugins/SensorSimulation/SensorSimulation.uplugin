@@ -1,0 +1,33 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Sensor Simulation",
+  "Description": "Lightweight RGB, annotation and LiDAR synthetic dataset framework.",
+  "Category": "Simulation",
+  "CreatedBy": "Sensor Simulation Team",
+  "CanContainContent": true,
+  "IsBetaVersion": true,
+  "Modules": [
+    {
+      "Name": "SimulationCore",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    },
+    {
+      "Name": "SimulationRenderer",
+      "Type": "Runtime",
+      "LoadingPhase": "PostConfigInit"
+    },
+    {
+      "Name": "SimulationRuntime",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    },
+    {
+      "Name": "SimulationEditor",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ]
+}
