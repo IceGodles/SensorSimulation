@@ -73,10 +73,18 @@ void USimulationSubsystem::UnregisterSemanticObject(const USemanticObjectCompone
     SemanticRegistry.Unregister(Component);
 }
 
-/** 把完成的图像移交给帧聚合器。 */
-void USimulationSubsystem::SubmitImage(FImagePayload&& Image)
+/** 校验完成图像，并仅把满足协议约束的载荷移交给帧聚合器。 */
+bool USimulationSubsystem::SubmitImage(FImagePayload&& Image)
 {
-    FrameAssembler.AddImage(MoveTemp(Image));
+    if (!ValidateImagePayload(Image))
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("Rejected image payload: frame=%llu sensor='%s' type=%u size=%dx%d bytes=%d."),
+            Image.Header.FrameId, *Image.SensorName.ToString(), static_cast<uint8>(Image.PayloadType),
+            Image.ImageSize.X, Image.ImageSize.Y, Image.Bytes.Num());
+        return false;
+    }
+    return FrameAssembler.AddImage(MoveTemp(Image));
 }
 
 /** 把完成的点云移交给帧聚合器。 */
@@ -99,7 +107,7 @@ void USimulationSubsystem::RequestFrame(double TimestampSeconds)
     {
         if (Sensor.IsValid() && Sensor->bSensorEnabled)
         {
-            Expected |= EPayloadType::Lidar;
+            Expected |= Sensor->GetPayloadTypes();
         }
     }
 
@@ -116,9 +124,42 @@ void USimulationSubsystem::RequestFrame(double TimestampSeconds)
         FCaptureRequest Request;
         Request.Header = Header;
         Request.SensorName = Sensor->SensorName;
-        Request.ExpectedPayloads = EPayloadType::Lidar;
+        Request.ExpectedPayloads = Sensor->GetPayloadTypes();
         Sensor->RequestCapture(Request);
     }
+}
+
+/** 验证紧密 RGBA8 图像布局，以及 Semantic 的通道值和注册标签集合。 */
+bool USimulationSubsystem::ValidateImagePayload(const FImagePayload& Image) const
+{
+    if ((Image.PayloadType != EPayloadType::Rgb && Image.PayloadType != EPayloadType::Semantic)
+        || Image.ImageSize.X <= 0 || Image.ImageSize.Y <= 0 || Image.BytesPerPixel != 4)
+    {
+        return false;
+    }
+    const int64 RequiredBytes = static_cast<int64>(Image.ImageSize.X)
+        * static_cast<int64>(Image.ImageSize.Y) * Image.BytesPerPixel;
+    if (RequiredBytes != Image.Bytes.Num())
+    {
+        return false;
+    }
+    if (Image.PayloadType == EPayloadType::Semantic)
+    {
+        TSet<uint8> ValidIds;
+        SemanticRegistry.GetImageSemanticIds(ValidIds);
+        for (int64 PixelOffset = 0; PixelOffset < RequiredBytes; PixelOffset += 4)
+        {
+            const uint8 SemanticId = Image.Bytes[PixelOffset + 0];
+            if (!ValidIds.Contains(SemanticId)
+                || Image.Bytes[PixelOffset + 1] != 0
+                || Image.Bytes[PixelOffset + 2] != 0
+                || Image.Bytes[PixelOffset + 3] != 255)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 /** 遍历带语义组件的 Actor 并采集位姿、包围盒和速度真值。 */

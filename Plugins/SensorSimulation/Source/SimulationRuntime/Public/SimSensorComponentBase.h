@@ -31,5 +31,8 @@ public:
 /** 在组件停止运行时注销自身并释放关联关系。 */
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 /** 在传感器空闲且启用时初始化一次新的采集任务。 */
+    /** 返回该传感器一次请求能够生产的模态位集合。 */
+    virtual EPayloadType GetPayloadTypes() const PURE_VIRTUAL(USimSensorComponentBase::GetPayloadTypes, return EPayloadType::None;);
+    /** 在传感器空闲且启用时初始化一次新的采集任务。 */
     virtual void RequestCapture(const FCaptureRequest& Request) PURE_VIRTUAL(USimSensorComponentBase::RequestCapture, );
 };

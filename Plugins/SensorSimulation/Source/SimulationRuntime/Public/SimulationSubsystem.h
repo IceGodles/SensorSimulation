@@ -35,7 +35,7 @@ public:
 /** 从实例编号注册表注销语义组件。 */
     void UnregisterSemanticObject(const USemanticObjectComponent& Component);
 /** 把完成的图像移交给帧聚合器。 */
-    void SubmitImage(FImagePayload&& Image);
+    bool SubmitImage(FImagePayload&& Image);
 /** 把完成的点云移交给帧聚合器。 */
     void SubmitLidar(FLidarScanPayload&& Scan);
 
@@ -62,4 +62,6 @@ private:
     void RequestFrame(double TimestampSeconds);
 /** 遍历带语义组件的 Actor 并采集位姿、包围盒和速度真值。 */
     TArray<FObjectGroundTruth> CaptureGroundTruth() const;
+    /** 验证图像尺寸、紧密 RGBA8 布局以及 Semantic 标签集合与通道约束。 */
+    bool ValidateImagePayload(const FImagePayload& Image) const;
 };

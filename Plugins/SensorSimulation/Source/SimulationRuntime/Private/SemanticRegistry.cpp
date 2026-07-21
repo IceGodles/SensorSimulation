@@ -24,6 +24,20 @@ const USemanticObjectComponent* FSemanticRegistry::Find(const AActor* Actor) con
     return Found && Found->IsValid() ? Found->Get() : nullptr;
 }
 
+/** 收集背景 0 与所有仍有效对象的 8 位图像语义标签。 */
+void FSemanticRegistry::GetImageSemanticIds(TSet<uint8>& OutIds) const
+{
+    OutIds.Reset();
+    OutIds.Add(0);
+    for (const TPair<TWeakObjectPtr<const AActor>, TWeakObjectPtr<USemanticObjectComponent>>& Entry : Entries)
+    {
+        if (const USemanticObjectComponent* Component = Entry.Value.Get())
+        {
+            OutIds.Add(static_cast<uint8>(FMath::Clamp(Component->SemanticId, 0, 255)));
+        }
+    }
+}
+
 /** 清空语义映射并重置实例编号生成器。 */
 void FSemanticRegistry::Reset()
 {

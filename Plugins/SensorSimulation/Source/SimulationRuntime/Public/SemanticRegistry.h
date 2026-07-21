@@ -17,6 +17,8 @@ public:
     const USemanticObjectComponent* Find(const AActor* Actor) const;
 /** 清空语义映射并重置实例编号生成器。 */
     void Reset();
+    /** 收集当前注册对象可由 8 位 Semantic 图像编码的合法标签集合。 */
+    void GetImageSemanticIds(TSet<uint8>& OutIds) const;
 
 private:
     /** 下一次注册语义对象时分配的实例编号。 */

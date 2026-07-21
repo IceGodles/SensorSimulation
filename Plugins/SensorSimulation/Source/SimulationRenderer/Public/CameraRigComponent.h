@@ -3,6 +3,7 @@
 #include "Components/SceneComponent.h"
 #include "CameraChannel.h"
 #include "SimulationTypes.h"
+#include "ImageReadbackManager.h"
 #include "CameraRigComponent.generated.h"
 
 class USceneCaptureComponent2D;
@@ -28,6 +29,10 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sensor", meta=(ClampMin="1.0", ClampMax="170.0"))
     float HorizontalFovDegrees = 90.0f;
 
+    /** GPU 读回队列允许同时存在的捕获任务上限，用于施加背压。 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sensor", meta=(ClampMin="1"))
+    int32 MaxPendingReadbacks = 8;
+
     /** 垂直激光通道数，或相机阵列中需要创建的输出通道配置。 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sensor")
     TArray<FCameraChannelConfig> Channels;
@@ -39,6 +44,27 @@ public:
 
 /** 触发所有通道延迟采集并广播本次请求。 */
     void SubmitCapture(const FCaptureRequest& Request);
+
+    /** 非阻塞取出一个已完成的 RGB 或 Semantic CPU 图像载荷。 */
+    bool PollCompletedImage(FImagePayload& OutPayload);
+    /** 返回当前启用且已支持正式读回的图像模态位集合。 */
+    EPayloadType GetEnabledPayloadTypes() const;
+
+    /** 立即执行所有有效通道的单帧采集，供编辑器人工检查。 */
+    UFUNCTION(CallInEditor, BlueprintCallable, Category="Sensor|Debug", meta=(DisplayName="Capture Debug Frame"))
+    void CaptureDebugFrame();
+
+    /** 采集 Semantic 通道并把线性 RGBA8 结果保存到 Saved/SensorSimulation/Debug。 */
+    UFUNCTION(CallInEditor, BlueprintCallable, Category="Sensor|Debug", meta=(DisplayName="Save Semantic Debug Image"))
+    void SaveSemanticDebugImage();
+
+    /** 返回指定通道的瞬态 Render Target；通道未创建或被禁用时返回空。 */
+    UFUNCTION(BlueprintPure, Category="Sensor|Debug")
+    UTextureRenderTarget2D* GetChannelRenderTarget(ECameraChannelType ChannelType) const;
+
+    /** 最近一次成功保存的 Semantic 调试 PNG 绝对路径。 */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category="Sensor|Debug")
+    FString LastSemanticDebugImagePath;
 /** 由分辨率和水平视场角计算针孔相机内参。 */
     FCalibration BuildCalibration(const FCameraChannelConfig& Channel) const;
 
@@ -61,6 +87,8 @@ private:
     TArray<FChannelRuntime> RuntimeChannels;
     /** 采集命令提交后向外部监听器广播的多播委托。 */
     FOnCaptureSubmitted CaptureSubmittedDelegate;
+    /** 管理 RGB/Semantic 的异步 GPU staging copy 与 CPU 完成队列。 */
+    TUniquePtr<FImageReadbackManager> ImageReadbackManager;
 
 /** 为每个有效配置创建场景捕获组件和匹配的渲染目标。 */
     void BuildChannels();

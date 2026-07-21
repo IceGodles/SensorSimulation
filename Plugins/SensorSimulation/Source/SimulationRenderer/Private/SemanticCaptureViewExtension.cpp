@@ -6,12 +6,6 @@
 #include "ScreenPass.h"
 #include "ShaderParameterStruct.h"
 
-namespace SemanticCapture
-{
-/** SceneCapture 写入 ViewFamily.ProfileDescription 的唯一标记。 */
-static const FString ViewFamilyMarker(TEXT("SensorSimulation.Semantic"));
-}
-
 /**
  * 从场景的 CustomStencil 纹理读取离散标签的全屏像素着色器。
  * 着色器不采样 SceneColor，也不执行任何颜色空间或后处理运算。
@@ -52,9 +46,9 @@ void FSemanticCaptureViewExtension::SubscribeToPostProcessingPass(
     FPostProcessingPassDelegateArray& InOutPassCallbacks,
     bool bIsPassEnabled)
 {
-    // ProfileDescription 来自 USceneCaptureComponent::ProfilingEventName，能够区分同一 Actor 上的不同捕获组件。
+    // CameraRig 将 FinalToneCurveHDR 保留为 Semantic 专用捕获源；该枚举会稳定传递到渲染线程的 ViewFamily。
     const bool bIsSemanticView = InView.Family &&
-        InView.Family->ProfileDescription.Contains(SemanticCapture::ViewFamilyMarker, ESearchCase::CaseSensitive);
+        InView.Family->SceneCaptureSource == ESceneCaptureSource::SCS_FinalToneCurveHDR;
     if (bIsSemanticView && Pass == EPostProcessingPass::Tonemap)
     {
         InOutPassCallbacks.Add(FPostProcessingPassDelegate::CreateRaw(
@@ -93,8 +87,8 @@ FScreenPassTexture FSemanticCaptureViewExtension::RenderSemanticLabels(
     PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
     const FScreenPassTextureViewport OutputViewport(Output);
-    TShaderMapRef<FScreenPassVS> VertexShader(View.ShaderMap);
-    TShaderMapRef<FSemanticCapturePS> PixelShader(View.ShaderMap);
+    TShaderMapRef<FScreenPassVS> VertexShader(GetGlobalShaderMap(View.GetFeatureLevel()));
+    TShaderMapRef<FSemanticCapturePS> PixelShader(GetGlobalShaderMap(View.GetFeatureLevel()));
     AddDrawScreenPass(
         GraphBuilder,
         RDG_EVENT_NAME("SemanticCapture(CustomStencil)"),
