@@ -33,4 +33,12 @@ public:
     /** 数据集文件的输出根目录。 */
     UPROPERTY(Config, EditAnywhere, Category="Export")
     FDirectoryPath DatasetRoot;
+
+    /** 帧等待所有模态到齐的超时时间，超时帧将被丢弃并记录日志。单位为秒。 */
+    UPROPERTY(Config, EditAnywhere, Category="Frame", meta=(ClampMin="0.1"))
+    double FrameTimeoutSeconds = 2.0;
+
+    /** 确定性数据集模式使用的随机种子，相同种子保证可复现的 Actor 轨迹和帧序列。 */
+    UPROPERTY(Config, EditAnywhere, Category="Deterministic")
+    int32 RandomSeed = 42;
 };

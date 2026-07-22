@@ -1,5 +1,6 @@
 #include "SimLidarSensorComponent.h"
 #include "SemanticObjectComponent.h"
+#include "SimulationSubsystem.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 
@@ -116,12 +117,23 @@ void USimLidarSensorComponent::TraceBatch()
     }
 }
 
-/** 结束当前扫描、停用 Tick 并广播扫描结果。 */
+/** 结束当前扫描、停用 Tick、提交给 Subsystem 并广播扫描结果。 */
 void USimLidarSensorComponent::FinalizeScan()
 {
     ActiveScan.bCompleteRevolution = ActiveScan.CompletedRayCount == ActiveScan.ExpectedRayCount;
     SetComponentTickEnabled(false);
     ActiveRequest.Reset();
+
+    // 先提交给 Subsystem 进行帧聚合，再广播委托。
+    // SubmitLidar 使用移动语义，调用后 ActiveScan 为空。
+    if (UWorld* World = GetWorld())
+    {
+        if (USimulationSubsystem* Subsystem = World->GetSubsystem<USimulationSubsystem>())
+        {
+            Subsystem->SubmitLidar(MoveTemp(ActiveScan));
+        }
+    }
+
     ScanCompleteDelegate.Broadcast(ActiveScan);
 }
 

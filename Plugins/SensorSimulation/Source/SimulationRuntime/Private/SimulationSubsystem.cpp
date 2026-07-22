@@ -2,6 +2,8 @@
 #include "SemanticObjectComponent.h"
 #include "SimSensorComponentBase.h"
 #include "SimulationSettings.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
@@ -10,11 +12,59 @@
 void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
+
+    const USimulationSettings* Settings = GetDefault<USimulationSettings>();
+
+    // 确定性模式下设置固定随机种子，保证可复现性
+    if (Settings->SimulationMode == ERuntimeMode::DeterministicDataset)
+    {
+        FMath::RandInit(Settings->RandomSeed);
+        FMath::SRandInit(Settings->RandomSeed);
+        UE_LOG(LogTemp, Log,
+            TEXT("Deterministic dataset mode: seed=%d, step=%.4fs"),
+            Settings->RandomSeed, Settings->FixedStepSeconds);
+    }
+
+    // 启动数据集会话
+    FString Root = Settings->DatasetRoot.Path;
+    if (Root.IsEmpty())
+    {
+        Root = FPaths::ProjectSavedDir() / TEXT("SensorSimulation");
+    }
+
+    DatasetSession = MakeUnique<FDatasetSession>();
+    DatasetSession->Start(Root);
+
+    // 根据配置创建并启动导出服务，输出到会话目录下
+    ExportService = MakeUnique<FExportService>(Settings->MaxPendingFrames);
+    ExportService->Start(DatasetSession->GetSessionDirectory());
 }
 
 /** 清空传感器和语义状态后反初始化子系统。 */
 void USimulationSubsystem::Deinitialize()
 {
+    // 先停止导出服务，确保所有帧已写出
+    if (ExportService)
+    {
+        ExportService->Stop();
+    }
+
+    // 写入会话元数据
+    if (DatasetSession && DatasetSession->GetState() == ESessionState::Running)
+    {
+        const USimulationSettings* Settings = GetDefault<USimulationSettings>();
+        const FFrameAssemblerStats& Stats = FrameAssembler.GetStats();
+        const FString Mode = Settings->SimulationMode == ERuntimeMode::DeterministicDataset
+            ? TEXT("DeterministicDataset") : TEXT("Realtime");
+
+        DatasetSession->WriteMetadata(
+            Stats.TotalFrames, Stats.CompletedFrames, Stats.FailedFrames + Stats.TimeoutFrames,
+            Settings->RandomSeed, Mode);
+        DatasetSession->Stop();
+    }
+
+    ExportService.Reset();
+    DatasetSession.Reset();
     Sensors.Reset();
     SemanticRegistry.Reset();
     Super::Deinitialize();
@@ -28,18 +78,34 @@ void USimulationSubsystem::Tick(float DeltaTime)
     AccumulatedSeconds += DeltaTime;
     SimulationSeconds += DeltaTime;
 
+    // 确定性模式下，等待所有待处理帧完成后再请求新帧，保证严格顺序
+    const bool bCanRequestNewFrame =
+        Settings->SimulationMode == ERuntimeMode::DeterministicDataset
+            ? FrameAssembler.GetPendingFrameCount() == 0
+            : true;
+
     // 累加器把不稳定的游戏帧 DeltaTime 转换为固定频率采样；Fmod 保留不足一步的余量。
-    if (AccumulatedSeconds >= Step)
+    if (bCanRequestNewFrame && AccumulatedSeconds >= Step)
     {
         AccumulatedSeconds = FMath::Fmod(AccumulatedSeconds, Step);
         RequestFrame(SimulationSeconds);
     }
 
+    // 清理超时帧，避免 Pending 队列无限增长
+    FrameAssembler.PurgeTimedOutFrames(SimulationSeconds, Settings->FrameTimeoutSeconds);
+
     FFramePacket CompletePacket;
     while (FrameAssembler.PopCompleteFrame(CompletePacket))
     {
-        // Export service integration point. A packet is published only after
-        // every expected modality has arrived.
+        if (ExportService)
+        {
+            EExportBackpressurePolicy Policy = EExportBackpressurePolicy::RejectNewest;
+            if (Settings->SimulationMode == ERuntimeMode::DeterministicDataset)
+            {
+                Policy = EExportBackpressurePolicy::BlockDatasetClock;
+            }
+            ExportService->Enqueue(MoveTemp(CompletePacket), Policy);
+        }
     }
 }
 
@@ -93,6 +159,15 @@ void USimulationSubsystem::SubmitLidar(FLidarScanPayload&& Scan)
     FrameAssembler.AddLidar(MoveTemp(Scan));
 }
 
+/** 注册相机标定参数，会话结束时写入 calibration.json。 */
+void USimulationSubsystem::RegisterCalibration(const FCalibration& Calibration)
+{
+    if (DatasetSession)
+    {
+        DatasetSession->RegisterCalibration(Calibration);
+    }
+}
+
 /** 创建同步帧、采集真值并向所有启用的传感器下发请求。 */
 void USimulationSubsystem::RequestFrame(double TimestampSeconds)
 {
@@ -121,10 +196,15 @@ void USimulationSubsystem::RequestFrame(double TimestampSeconds)
             continue;
         }
 
+        const EPayloadType SensorPayloads = Sensor->GetPayloadTypes();
+
+        // 注册传感器的预期模态，用于多传感器精确完成计数
+        FrameAssembler.RegisterSensor(Header.FrameId, Sensor->SensorName, SensorPayloads);
+
         FCaptureRequest Request;
         Request.Header = Header;
         Request.SensorName = Sensor->SensorName;
-        Request.ExpectedPayloads = Sensor->GetPayloadTypes();
+        Request.ExpectedPayloads = SensorPayloads;
         Sensor->RequestCapture(Request);
     }
 }

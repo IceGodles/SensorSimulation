@@ -3,6 +3,8 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "FrameAssembler.h"
 #include "SemanticRegistry.h"
+#include "ExportService.h"
+#include "DatasetSession.h"
 #include "SimulationSubsystem.generated.h"
 
 class USemanticObjectComponent;
@@ -38,6 +40,8 @@ public:
     bool SubmitImage(FImagePayload&& Image);
 /** 把完成的点云移交给帧聚合器。 */
     void SubmitLidar(FLidarScanPayload&& Scan);
+/** 注册相机标定参数，会话结束时写入 calibration.json。 */
+    void RegisterCalibration(const FCalibration& Calibration);
 
 /** 返回当前等待所有模态到齐的帧数量。 */
     int32 GetPendingFrameCount() const { return FrameAssembler.GetPendingFrameCount(); }
@@ -49,6 +53,10 @@ private:
     FSemanticRegistry SemanticRegistry;
     /** 负责把异步传感器结果合并为同步帧的聚合器。 */
     FFrameAssembler FrameAssembler;
+    /** 负责将完整帧异步写出到磁盘的导出服务。 */
+    TUniquePtr<FExportService> ExportService;
+    /** 管理数据集采集会话的生命周期和元数据。 */
+    TUniquePtr<FDatasetSession> DatasetSession;
     /** 当前仿真或数据集采集会话的序列编号。 */
     uint64 SequenceId = 1;
     /** 下一次发起采集时使用的帧编号。 */

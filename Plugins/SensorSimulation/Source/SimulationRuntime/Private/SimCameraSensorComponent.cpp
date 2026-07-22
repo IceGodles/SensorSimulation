@@ -23,6 +23,24 @@ void USimCameraSensorComponent::BeginPlay()
     if (CameraRig)
     {
         SensorName = CameraRig->SensorName;
+
+        // 注册相机标定参数到 Subsystem，用于会话结束时写出 calibration.json
+        if (UWorld* World = GetWorld())
+        {
+            if (USimulationSubsystem* Subsystem = World->GetSubsystem<USimulationSubsystem>())
+            {
+                // 为第一个启用的通道注册标定
+                const TArray<FCameraChannelConfig>& Channels = CameraRig->Channels;
+                for (const FCameraChannelConfig& Channel : Channels)
+                {
+                    if (Channel.bEnabled)
+                    {
+                        Subsystem->RegisterCalibration(CameraRig->BuildCalibration(Channel));
+                        break;
+                    }
+                }
+            }
+        }
     }
     Super::BeginPlay();
 }
