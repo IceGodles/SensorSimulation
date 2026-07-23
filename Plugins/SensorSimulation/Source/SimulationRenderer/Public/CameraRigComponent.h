@@ -12,7 +12,11 @@ class UTextureRenderTarget2D;
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCaptureSubmitted, const FCaptureRequest&);
 
 UCLASS(ClassGroup=(SensorSimulation), meta=(BlueprintSpawnableComponent))
-/** 管理多模态场景捕获组件与相机标定的传感器阵列组件。 */
+/** 管理多模态场景捕获组件与相机标定的传感器阵列组件。
+ *  UCameraRigComponent 相机成像执行层：
+ *  1.相机安装位置
+ *  2.管理 RGB/Semantic 等多个 Scene Capture 和 Render Target，
+ *    收到采集请求后触发 GPU 渲染，再异步生成可供 CPU 使用的图像数据。*/
 class SIMULATIONRENDERER_API UCameraRigComponent : public USceneComponent
 {
     GENERATED_BODY()
@@ -33,7 +37,7 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sensor", meta=(ClampMin="1"))
     int32 MaxPendingReadbacks = 8;
 
-    /** 垂直激光通道数，或相机阵列中需要创建的输出通道配置。 */
+    /** 相机阵列中需要创建的输出通道配置。 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sensor")
     TArray<FCameraChannelConfig> Channels;
 
@@ -42,7 +46,7 @@ public:
 /** 组件注销前销毁动态创建的捕获通道。 */
     virtual void OnUnregister() override;
 
-/** 触发所有通道延迟采集并广播本次请求。 */
+/** 按下快门 触发所有通道延迟采集并广播本次请求。 */
     void SubmitCapture(const FCaptureRequest& Request);
 
     /** 非阻塞取出一个已完成的 RGB 或 Semantic CPU 图像载荷。 */

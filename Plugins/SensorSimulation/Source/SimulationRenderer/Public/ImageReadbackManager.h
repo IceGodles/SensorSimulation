@@ -15,7 +15,9 @@ public:
 /** 销毁对象并释放其持有的私有资源。 */
     ~FImageReadbackManager();
 
-/** 在容量允许时提交异步任务或数据包，失败时保持输入状态可判定。 */
+/** 在容量允许时 把结果从 GPU显存的 Render Target 异步回读到 CPU FImagePayload::Bytes */
+    // Enqueue() 返回 true 只表示任务成功排队，不表示图像已经复制到 CPU
+    // 向渲染线程提交一个 GPU Texture Readback 命令
     bool Enqueue(
         UTextureRenderTarget2D* RenderTarget,
         const FCaptureRequest& Request,

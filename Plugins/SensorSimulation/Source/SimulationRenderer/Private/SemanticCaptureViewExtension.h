@@ -11,7 +11,8 @@ class FSemanticCaptureViewExtension final : public FSceneViewExtensionBase
 public:
     explicit FSemanticCaptureViewExtension(const FAutoRegister& AutoRegister);
 
-    /** 在语义视图的 Tonemap 节点后注册全屏标签输出回调。 */
+	// 当 UE 构建某个 View 的后处理流程时，判断它是不是语义相机；
+	// 如果是，并且当前正在配置 Tonemap 阶段，就把 RenderSemanticLabels() 注册为该阶段的额外渲染回调。
     virtual void SubscribeToPostProcessingPass(
         EPostProcessingPass Pass,
         const FSceneView& InView,

@@ -15,6 +15,7 @@ UCameraRigComponent::UCameraRigComponent()
 {
     PrimaryComponentTick.bCanEverTick = false;
 
+    // 默认提供RGB通道和Semantic通道
     FCameraChannelConfig Rgb;
     Rgb.ChannelType = ECameraChannelType::Rgb;
     Channels.Add(Rgb);
@@ -60,10 +61,12 @@ void UCameraRigComponent::BuildChannels()
 
         FChannelRuntime& Runtime = RuntimeChannels.AddDefaulted_GetRef();
         Runtime.Config = Config;
+        // 创建 Capture 组件，绑定到 Rig 
         Runtime.Capture = NewObject<USceneCaptureComponent2D>(GetOwner());
         Runtime.Capture->SetupAttachment(this);
         Runtime.Capture->RegisterComponent();
 
+        // 创建 render target
         Runtime.Target = NewObject<UTextureRenderTarget2D>(this);
         Runtime.Target->bForceLinearGamma = Config.ChannelType == ECameraChannelType::Semantic
             ? true
@@ -75,6 +78,7 @@ void UCameraRigComponent::BuildChannels()
         Runtime.Target->InitAutoFormat(Config.Resolution.X, Config.Resolution.Y);
         Runtime.Target->UpdateResourceImmediate(true);
 
+        // 配置各通道渲染行为和参数
         ConfigureCapture(Runtime);
     }
 }
@@ -134,7 +138,7 @@ void UCameraRigComponent::ConfigureCapture(FChannelRuntime& Channel)
     }
 }
 
-/** 触发所有通道延迟采集并广播本次请求。 */
+/** 按下快门 触发所有通道延迟采集并广播本次请求。 */
 void UCameraRigComponent::SubmitCapture(const FCaptureRequest& Request)
 {
     if (!ImageReadbackManager)
@@ -159,8 +163,10 @@ void UCameraRigComponent::SubmitCapture(const FCaptureRequest& Request)
             continue;
         }
 
-        // CaptureScene 先把本帧捕获命令排入渲染线程；紧随其后的 EnqueueCopy 因命令顺序读取同一帧结果。
+        // 拍摄！
+        // CaptureScene 先把本帧捕获命令排入渲染线程
         Runtime.Capture->CaptureScene();
+        // 把结果从 GPU显存的 Render Target 异步回读到 CPU FImagePayload::Bytes
         if (!ImageReadbackManager->Enqueue(Runtime.Target, Request, PayloadType))
         {
             UE_LOG(LogCameraRigDebug, Warning,
@@ -171,7 +177,10 @@ void UCameraRigComponent::SubmitCapture(const FCaptureRequest& Request)
     CaptureSubmittedDelegate.Broadcast(Request);
 }
 
-/** 非阻塞推进 GPU fence 并取出一个完成的 CPU 图像载荷。 */
+/** 取出一个完成的 CPU 图像 FImagePayload。 
+*   USimCameraSensorComponent::TickComponent()
+    会不断调用 PollCompletedImage()
+ */
 bool UCameraRigComponent::PollCompletedImage(FImagePayload& OutPayload)
 {
     return ImageReadbackManager && ImageReadbackManager->PollCompleted(OutPayload);

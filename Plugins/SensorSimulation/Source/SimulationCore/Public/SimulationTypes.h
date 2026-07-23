@@ -52,7 +52,7 @@ struct FCaptureRequest
     FFrameHeader Header;
     /** 传感器的稳定名称，用于区分同一帧内的多个数据源。 */
     FName SensorName = NAME_None;
-    /** 该请求或帧在发布前必须产生的数据模态位集合。 */
+    /** 该请求或帧的期望输出 */
     EPayloadType ExpectedPayloads = EPayloadType::None;
     /** 传感器坐标系相对于自车坐标系的外参变换。 */
     FTransform SensorToEgo = FTransform::Identity;

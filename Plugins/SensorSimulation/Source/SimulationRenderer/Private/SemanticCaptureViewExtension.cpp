@@ -40,9 +40,11 @@ FSemanticCaptureViewExtension::FSemanticCaptureViewExtension(const FAutoRegister
 {
 }
 
+// 当 UE 构建某个 View 的后处理流程时，判断它是不是语义相机；
+// 如果是，并且当前正在配置 Tonemap 阶段，就把 RenderSemanticLabels() 注册为该阶段的额外渲染回调。
 void FSemanticCaptureViewExtension::SubscribeToPostProcessingPass(
-    EPostProcessingPass Pass,
-    const FSceneView& InView,
+    EPostProcessingPass Pass, // 处于哪个后处理阶段
+    const FSceneView& InView, // 某一次渲染所使用的“相机视图描述”
     FPostProcessingPassDelegateArray& InOutPassCallbacks,
     bool bIsPassEnabled)
 {
@@ -51,17 +53,23 @@ void FSemanticCaptureViewExtension::SubscribeToPostProcessingPass(
         InView.Family->SceneCaptureSource == ESceneCaptureSource::SCS_FinalToneCurveHDR;
     if (bIsSemanticView && Pass == EPostProcessingPass::Tonemap)
     {
+        // 把 RenderSemanticLabels 加入到pass的回调数组
         InOutPassCallbacks.Add(FPostProcessingPassDelegate::CreateRaw(
             this,
             &FSemanticCaptureViewExtension::RenderSemanticLabels));
     }
 }
 
+// 语义标签回调函数
+// Semantic Capture 在 Tonemap 阶段调用
+// 在 RDG 中添加一个全屏绘制 Pass，让语义 Pixel Shader 对输出图像的每个像素执行一次，
+// 读取对应位置的 CustomStencil，然后把标签写入输出 Render Target。
 FScreenPassTexture FSemanticCaptureViewExtension::RenderSemanticLabels(
     FRDGBuilder& GraphBuilder,
     const FSceneView& View,
     const FPostProcessMaterialInputs& Inputs) const
 {
+    // 取得后处理输入 SceneColor
     const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
         GraphBuilder,
         Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
@@ -70,7 +78,9 @@ FScreenPassTexture FSemanticCaptureViewExtension::RenderSemanticLabels(
         return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
     }
 
+    // 确定输出 Render Target
     // 最后一个后处理回调可能直接获得 SceneCapture 的目标；否则创建同尺寸的独立输出。
+    // UE 的 Screen Pass 类型提供了相应转换，输出 Render Target 可以作为完成后的 Screen Pass Texture 返回
     FScreenPassRenderTarget Output = Inputs.OverrideOutput;
     if (!Output.IsValid())
     {
@@ -81,14 +91,20 @@ FScreenPassTexture FSemanticCaptureViewExtension::RenderSemanticLabels(
             TEXT("SemanticCaptureOutput"));
     }
 
+    // 分配并填写 Shader 参数
     FSemanticCapturePS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSemanticCapturePS::FParameters>();
     PassParameters->View = View.ViewUniformBuffer;
     PassParameters->SceneTextures = Inputs.SceneTextures;
     PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
+    // 创建输出 Viewport
     const FScreenPassTextureViewport OutputViewport(Output);
+    
+    // 通用全屏顶点 Shader
     TShaderMapRef<FScreenPassVS> VertexShader(GetGlobalShaderMap(View.GetFeatureLevel()));
     TShaderMapRef<FSemanticCapturePS> PixelShader(GetGlobalShaderMap(View.GetFeatureLevel()));
+    
+    // 添加一个全屏绘制 Pass
     AddDrawScreenPass(
         GraphBuilder,
         RDG_EVENT_NAME("SemanticCapture(CustomStencil)"),
@@ -99,5 +115,6 @@ FScreenPassTexture FSemanticCaptureViewExtension::RenderSemanticLabels(
         PixelShader,
         PassParameters);
 
+    // 返回生成的语义标签纹理
     return Output;
 }

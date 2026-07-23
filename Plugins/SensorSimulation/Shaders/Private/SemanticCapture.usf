@@ -1,13 +1,22 @@
-// 语义采集框架计算shader
-// 将 CustomStencil 中的 8 位语义标签直接编码到线性 RGBA8 输出。
-// 使用整数像素坐标和 Load，禁止过滤、邻域混合及任何颜色后处理。
-
+// Encodes the 8-bit CustomStencil semantic label directly into linear RGBA8.
+// Integer texel loads avoid filtering, neighborhood mixing, and color transforms.
 #include "/Engine/Private/ScreenPass.ush"
 #include "/Engine/Private/SceneTexturesCommon.ush"
 
-void MainPS(float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
+void MainPS(
+    noperspective float4 UVAndScreenPos : TEXCOORD0,
+    float4 SvPosition : SV_POSITION,
+    out float4 OutColor : SV_Target0)
 {
-    // 对每个fragment，读取其位置对应的 Custom Stencil 值
-    const uint SemanticId = CalcSceneCustomStencil(uint2(SvPosition.xy));
+    // FScreenPassVS outputs TEXCOORD0 before SV_POSITION. D3D12 requires the
+    // pixel-shader input signature to preserve those hardware-register slots.
+    //
+    // Use the effective ViewRect rather than the pooled scene-texture extent:
+    // RDG can allocate a texture larger than an odd-sized capture viewport.
+    const uint2 ViewSize = uint2(View.ViewSizeAndInvSize.xy);
+    const uint2 PixelPos = uint2(View.ViewRectMin.xy) + min(
+        uint2(UVAndScreenPos.xy * float2(ViewSize)),
+        ViewSize - 1);
+    const uint SemanticId = CalcSceneCustomStencil(PixelPos);
     OutColor = float4(float(SemanticId) / 255.0f, 0.0f, 0.0f, 1.0f);
 }

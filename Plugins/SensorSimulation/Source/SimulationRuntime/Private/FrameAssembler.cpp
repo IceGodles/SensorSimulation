@@ -157,9 +157,10 @@ int32 FFrameAssembler::PurgeTimedOutFrames(double CurrentTimeSeconds, double Tim
 
     for (const uint64 FrameId : TimedOutFrames)
     {
+        const double* CreationTime = FrameCreationTime.Find(FrameId);
         // 记录超时帧的详细信息
         const FFramePacket* Packet = PendingFrames.Find(FrameId);
-        if (Packet)
+        if (Packet && CreationTime)
         {
             // 收集缺失模态信息
             FString MissingModalities;

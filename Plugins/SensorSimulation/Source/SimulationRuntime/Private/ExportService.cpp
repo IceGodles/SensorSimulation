@@ -137,11 +137,11 @@ struct FExportService::FImpl : public FRunnable
 
         if (bSuccess)
         {
-            ExportedFrameCount.IncrementExchange();
+            ExportedFrameCount.Increment();
         }
         else
         {
-            FailedFrameCount.IncrementExchange();
+            FailedFrameCount.Increment();
         }
     }
 
@@ -180,7 +180,7 @@ struct FExportService::FImpl : public FRunnable
             ERGBFormat::BGRA, 8
         );
 
-        const TArray<uint8>& PngData = ImageWrapper->GetCompressed();
+        const TArray64<uint8> PngData = ImageWrapper->GetCompressed();
         return FFileHelper::SaveArrayToFile(PngData, *FilePath);
     }
 

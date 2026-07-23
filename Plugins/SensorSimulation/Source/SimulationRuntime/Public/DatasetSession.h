@@ -41,6 +41,8 @@ public:
                        int32 Seed, const FString& Mode);
 
 private:
+    /** Write registered camera calibration parameters to calibration.json. */
+    void WriteCalibrationJson() const;
 /** 生成唯一的会话标识符。 */
     static FString GenerateSessionId();
 /** 生成带时间戳的目录名。 */
