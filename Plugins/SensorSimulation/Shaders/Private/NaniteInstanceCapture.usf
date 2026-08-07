@@ -1,0 +1,51 @@
+// Decodes UE Nanite visibility and exports stable SensorSimulation instance IDs.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/SceneData.ush"
+#include "/Engine/Private/Nanite/NaniteDataDecode.ush"
+#include "/Engine/Private/Nanite/NaniteSceneCommon.ush"
+
+Texture2D<UlongType> VisBuffer64;
+ByteAddressBuffer VisibleClustersSWHW;
+StructuredBuffer<uint2> PrimitiveInstanceBindings;
+uint PrimitiveBindingCount;
+int4 ViewRect;
+
+void MainPS(
+    in float4 SvPosition : SV_Position,
+    out uint OutInstanceId : SV_Target0,
+    out float OutDepth : SV_Depth)
+{
+    const uint2 OutputPixel = (uint2)SvPosition.xy;
+    const uint2 InputPixel = OutputPixel + (uint2)ViewRect.xy;
+    const UlongType VisPixel = VisBuffer64[InputPixel];
+
+    // Match UE's official Nanite export contract: define outputs before every discard path.
+    OutInstanceId = 0u;
+    OutDepth = 0.0f;
+    uint DepthInt = 0u;
+    uint VisibleClusterIndex = 0u;
+    uint TriIndex = 0u;
+    UnpackVisPixel(VisPixel, DepthInt, VisibleClusterIndex, TriIndex);
+
+    if (VisibleClusterIndex == 0xFFFFFFFFu)
+    {
+        discard;
+    }
+
+    FVisibleCluster VisibleCluster = GetVisibleCluster(VisibleClusterIndex);
+    const FInstanceSceneData InstanceData = GetInstanceSceneDataUnchecked(VisibleCluster);
+    if (InstanceData.PrimitiveId >= PrimitiveBindingCount)
+    {
+        discard;
+    }
+
+    const uint2 Binding = PrimitiveInstanceBindings[InstanceData.PrimitiveId];
+    if (Binding.x == 0u)
+    {
+        discard;
+    }
+
+    OutInstanceId = Binding.x + (Binding.y != 0u ? InstanceData.RelativeId : 0u);
+    OutDepth = asfloat(DepthInt);
+}

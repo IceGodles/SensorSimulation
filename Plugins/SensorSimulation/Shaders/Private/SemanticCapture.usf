@@ -4,8 +4,8 @@
 #include "/Engine/Private/SceneTexturesCommon.ush"
 
 void MainPS(
-    noperspective float4 UVAndScreenPos : TEXCOORD0,
-    float4 SvPosition : SV_POSITION,
+    noperspective float4 UVAndScreenPos : TEXCOORD0, // VS输出的归一化UV，直接在屏幕空间中线性插值，不执行透视校正。
+    float4 SvPosition : SV_POSITION, // 光栅化生成的像素坐标
     out float4 OutColor : SV_Target0)
 {
     // FScreenPassVS outputs TEXCOORD0 before SV_POSITION. D3D12 requires the

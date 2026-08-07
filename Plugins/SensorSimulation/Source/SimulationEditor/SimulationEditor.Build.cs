@@ -9,7 +9,7 @@ public class SimulationEditor : ModuleRules
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PrivateDependencyModuleNames.AddRange(new[]
         {
-            "Core", "CoreUObject", "Engine", "UnrealEd",
+            "Core", "CoreUObject", "Engine", "UnrealEd", "RenderCore",
             "SimulationCore", "SimulationRuntime", "SimulationRenderer"
         });
     }

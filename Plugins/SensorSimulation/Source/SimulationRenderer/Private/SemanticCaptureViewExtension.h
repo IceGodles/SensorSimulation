@@ -2,6 +2,18 @@
 
 #include "SceneViewExtension.h"
 
+class FRenderTarget;
+
+namespace UE::SensorSimulation::SemanticCapture
+{
+inline constexpr const TCHAR* ProfilingEventName = TEXT("SensorSimulation.Semantic");
+
+/** 显式登记 Semantic 通道的 RenderTarget；读锁允许渲染线程安全查询。 */
+void RegisterTarget(const FRenderTarget* RenderTarget);
+void UnregisterTarget(const FRenderTarget* RenderTarget);
+bool IsRegisteredTarget(const FRenderTarget* RenderTarget);
+}
+
 /**
  * 仅为带有 Semantic Capture 标记的 SceneCapture 注入标签输出 Pass。
  * Pass 在 Tonemap 完成后覆盖场景颜色，因此标签不会再受到曝光、光照或色调映射影响。

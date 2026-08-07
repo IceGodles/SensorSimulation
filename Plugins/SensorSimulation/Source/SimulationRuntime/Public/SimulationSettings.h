@@ -1,15 +1,8 @@
 #pragma once
 
 #include "Engine/DeveloperSettings.h"
+#include "SimulationTypes.h"
 #include "SimulationSettings.generated.h"
-
-UENUM(BlueprintType)
-/** 运行时子系统使用的时钟模式。 */
-enum class ERuntimeMode : uint8
-{
-    Realtime,
-    DeterministicDataset
-};
 
 UCLASS(Config=SensorSimulation, DefaultConfig, meta=(DisplayName="Sensor Simulation"))
 /** SensorSimulation 插件的项目级开发者设置。 */
@@ -20,7 +13,7 @@ class SIMULATIONRUNTIME_API USimulationSettings : public UDeveloperSettings
 public:
     /** 运行时采用实时推进还是确定性数据集时钟。 */
     UPROPERTY(Config, EditAnywhere, Category="Clock")
-    ERuntimeMode SimulationMode = ERuntimeMode::Realtime;
+    ESimulationMode SimulationMode = ESimulationMode::Realtime;
 
     /** 固定采集时钟的步长，单位为秒。 */
     UPROPERTY(Config, EditAnywhere, Category="Clock", meta=(ClampMin="0.001"))

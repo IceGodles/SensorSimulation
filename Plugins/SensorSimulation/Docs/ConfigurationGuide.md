@@ -38,7 +38,7 @@
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| SensorName | FName | TopLidar | 传感器唯一名称 |
+| SensorName | FName | TopLidar | 人类可读显示名称，允许重复；唯一身份由组件自动维护的 SensorGuid 提供 |
 | UpdateFrequencyHz | float | 10.0 | 扫描频率（Hz） |
 | bSensorEnabled | bool | true | 是否启用 |
 | Config.Channels | int | 16 | 垂直通道数（线数） |
@@ -73,7 +73,7 @@
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| SensorName | FName | FrontCamera | 传感器唯一名称 |
+| SensorName | FName | FrontCamera | 人类可读显示名称，允许重复；唯一身份由组件自动维护的 SensorGuid 提供 |
 | HorizontalFovDegrees | float | 90.0 | 水平视场角（度） |
 | MaxPendingReadbacks | int | 8 | GPU 回读队列上限 |
 | Channels | Array | - | 输出通道配置列表 |

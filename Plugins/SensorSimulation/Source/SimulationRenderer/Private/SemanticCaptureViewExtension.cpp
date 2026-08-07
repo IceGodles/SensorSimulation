@@ -48,9 +48,8 @@ void FSemanticCaptureViewExtension::SubscribeToPostProcessingPass(
     FPostProcessingPassDelegateArray& InOutPassCallbacks,
     bool bIsPassEnabled)
 {
-    // CameraRig 将 FinalToneCurveHDR 保留为 Semantic 专用捕获源；该枚举会稳定传递到渲染线程的 ViewFamily。
     const bool bIsSemanticView = InView.Family &&
-        InView.Family->SceneCaptureSource == ESceneCaptureSource::SCS_FinalToneCurveHDR;
+        UE::SensorSimulation::SemanticCapture::IsRegisteredTarget(InView.Family->RenderTarget);
     if (bIsSemanticView && Pass == EPostProcessingPass::Tonemap)
     {
         // 把 RenderSemanticLabels 加入到pass的回调数组

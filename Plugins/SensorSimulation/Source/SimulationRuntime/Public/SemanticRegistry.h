@@ -19,10 +19,12 @@ public:
     void Reset();
     /** 收集当前注册对象可由 8 位 Semantic 图像编码的合法标签集合。 */
     void GetImageSemanticIds(TSet<uint8>& OutIds) const;
+    /** 收集背景 0 与当前注册对象的完整 32 位合法 InstanceId 集合。 */
+    void GetInstanceIds(TSet<uint32>& OutIds) const;
 
 private:
     /** 下一次注册语义对象时分配的实例编号。 */
-    uint32 NextInstanceId = 1;
+    uint64 NextInstanceId = 1;
     /** Actor 到语义组件的弱引用映射，避免注册表延长 UObject 生命周期。 */
     TMap<TWeakObjectPtr<const AActor>, TWeakObjectPtr<USemanticObjectComponent>> Entries;
 };

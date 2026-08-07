@@ -31,22 +31,28 @@ void USimLidarSensorComponent::RebuildPattern()
 }
 
 /** 在传感器空闲且启用时初始化一次新的采集任务。 */
-void USimLidarSensorComponent::RequestCapture(const FCaptureRequest& Request)
+ECaptureRequestResult USimLidarSensorComponent::RequestCapture(const FCaptureRequest& Request)
 {
-    if (!bSensorEnabled || ActiveRequest.IsSet())
+    if (!bSensorEnabled || LocalRayDirections.IsEmpty())
     {
-        return;
+        return ECaptureRequestResult::Rejected;
+    }
+    if (ActiveRequest.IsSet())
+    {
+        return ECaptureRequestResult::Busy;
     }
 
     ActiveRequest = Request;
     ActiveScan = FLidarScanPayload();
     ActiveScan.Header = Request.Header;
-    ActiveScan.SensorName = SensorName;
+    ActiveScan.SensorName = Request.SensorName;
+    ActiveScan.SensorGuid = Request.SensorGuid;
     ActiveScan.SensorToEgo = Request.SensorToEgo;
     ActiveScan.ExpectedRayCount = static_cast<uint32>(LocalRayDirections.Num());
     ActiveScan.Points.Reserve(LocalRayDirections.Num());
     NextRayIndex = 0;
     SetComponentTickEnabled(true);
+    return ECaptureRequestResult::Accepted;
 }
 
 /** 在组件 Tick 中推进当前分批扫描任务。 */
@@ -103,7 +109,8 @@ void USimLidarSensorComponent::TraceBatch()
                 if (const USemanticObjectComponent* Semantic = HitActor->FindComponentByClass<USemanticObjectComponent>())
                 {
                     Point.SemanticId = static_cast<uint16>(FMath::Clamp(Semantic->SemanticId, 0, 65535));
-                    Point.InstanceId = static_cast<uint32>(FMath::Max(0, Semantic->InstanceId));
+                    Point.InstanceId =
+                        Semantic->InstanceId > 0 ? static_cast<uint32>(Semantic->InstanceId) : 0u;
                 }
             }
         }

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "SimulationTypes.h"
+#include "CameraRigComponent.h"
 
 /** 数据集采集会话的运行时状态。 */
 enum class ESessionState : uint8
@@ -14,6 +15,21 @@ enum class ESessionState : uint8
     Stopping
 };
 
+/** 单台 Camera Rig 写入会话 metadata 的 Renderer 指标快照。 */
+struct SIMULATIONRUNTIME_API FCameraRendererMetricsSnapshot
+{
+    /** Camera Adapter 的持久身份，是指标 Upsert 的唯一键。 */
+    FGuid SensorGuid;
+    /** Camera Rig 的人类可读显示名称。 */
+    FName SensorName = NAME_None;
+    /** Capture/RenderTarget 创建、复用和重建计数。 */
+    FCameraRigResourceStats ResourceStats;
+    /** 该 Rig 的 Readback 汇总容量与结果计数。 */
+    FImageReadbackStats ReadbackStats;
+    /** 按 SensorGuid + ChannelGuid 细分的延迟与背压指标。 */
+    TArray<FImageReadbackChannelStats> ChannelStats;
+};
+
 /** 管理一次数据集采集会话的生命周期、输出目录和元数据。 */
 class SIMULATIONRUNTIME_API FDatasetSession
 {
@@ -21,31 +37,35 @@ public:
     FDatasetSession();
     ~FDatasetSession();
 
-/** 启动新的采集会话，创建输出目录。返回是否成功。 */
+    /** 启动新的采集会话，创建输出目录。返回是否成功。 */
     bool Start(const FString& BaseRoot, const FString& SessionName = TEXT(""));
-/** 停止当前会话，写入 metadata.json 和 calibration.json。 */
+    /** 停止当前会话，写入 metadata.json 和 calibration.json。 */
     void Stop();
 
-/** 注册一帧的相机标定参数，会话结束时写入 calibration.json。 */
+    /** 注册或更新单个相机通道标定，会话结束时按 ChannelGuid 分别写入 calibration.json。 */
     void RegisterCalibration(const FCalibration& Calibration);
+    /** 注册或更新 Camera Rig 的 Renderer 指标；会话结束时写入 metadata.json。 */
+    void RegisterRendererMetrics(const FCameraRendererMetricsSnapshot& Metrics);
 
-/** 返回当前会话的输出目录路径。 */
+    /** 返回当前会话的输出目录路径。 */
     FString GetSessionDirectory() const { return SessionDirectory; }
-/** 返回当前会话状态。 */
+    /** 返回当前会话状态。 */
     ESessionState GetState() const { return State; }
-/** 返回当前会话的唯一标识。 */
+    /** 返回当前会话的唯一标识。 */
     FString GetSessionId() const { return SessionId; }
 
-/** 写入 metadata.json，包含会话配置和统计信息。 */
+    /** 写入 metadata.json，包含会话配置、帧终态和异常 Payload 统计。 */
     void WriteMetadata(int64 TotalFrames, int64 CompletedFrames, int64 FailedFrames,
+                       int64 TimeoutFrames, int64 BusyFrames, int64 RejectedFrames,
+                       int64 DuplicatePayloads, int64 LatePayloads,
                        int32 Seed, const FString& Mode);
 
 private:
-    /** Write registered camera calibration parameters to calibration.json. */
+    /** 将已注册的逐通道相机标定写入 calibration.json。 */
     void WriteCalibrationJson() const;
-/** 生成唯一的会话标识符。 */
+    /** 生成唯一的会话标识符。 */
     static FString GenerateSessionId();
-/** 生成带时间戳的目录名。 */
+    /** 生成带时间戳的目录名。 */
     static FString GenerateSessionDirectoryName();
 
     ESessionState State = ESessionState::Idle;
@@ -53,6 +73,8 @@ private:
     FString SessionDirectory;
     FDateTime StartTime;
 
-/** 已注册的相机标定参数。 */
+    /** 已注册的逐通道相机标定参数。 */
     TArray<FCalibration> Calibrations;
+    /** 每台 Camera Rig 的最新 Renderer 指标快照。 */
+    TArray<FCameraRendererMetricsSnapshot> RendererMetrics;
 };

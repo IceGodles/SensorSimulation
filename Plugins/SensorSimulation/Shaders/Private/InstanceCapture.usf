@@ -1,0 +1,105 @@
+// Renders a registered primitive's full 32-bit InstanceId into an R32_UINT target.
+// This pass is independent from the 8-bit CustomStencil semantic channel.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Generated/Material.ush"
+#include "/Engine/Generated/VertexFactory.ush"
+
+struct FInstanceCaptureVSToPS
+{
+    FStereoVSOutput StereoOutput;
+    INVARIANT_OUTPUT float4 Position : SV_POSITION;
+    nointerpolation float RelativeInstanceId : TEXCOORD7;
+
+#if !MATERIALBLENDING_SOLID
+    // Masked materials need vertex-factory interpolants so the pixel shader can
+    // evaluate the source material's UV-driven Opacity Mask.
+    FVertexFactoryInterpolantsVSToPS FactoryInterpolants;
+    float4 PixelPosition : TEXCOORD6;
+#endif
+};
+
+#if VERTEXSHADER
+float4x4 InstanceTranslatedWorldToClip;
+void MainVS(
+    FVertexFactoryInput Input,
+    out FInstanceCaptureVSToPS Output
+#if USE_GLOBAL_CLIP_PLANE
+    , out float OutGlobalClipPlaneDistance : SV_ClipDistance
+#endif
+    )
+{
+    // 初始化立体视图数据
+    StereoSetupVF(Input, Output.StereoOutput);
+
+    // 解析 VertexFactory 顶点数据
+    FVertexFactoryIntermediates VFIntermediates = GetVertexFactoryIntermediates(Input);
+    // ISM/HISM 的 GPU Scene 数据保存组件内稳定相对编号；普通 VertexFactory 输出 0。
+#if USE_INSTANCING || USE_INSTANCE_CULLING
+    Output.RelativeInstanceId = float(GetInstanceData(VFIntermediates).RelativeId);
+#else
+    Output.RelativeInstanceId = 0u;
+#endif
+    // 取得顶点的世界位置
+    float4 WorldPosition = VertexFactoryGetWorldPosition(Input, VFIntermediates);
+    // 取得切线坐标
+    // 普通 Instance Opaque 不关心最终光照和法线颜色，但 UE 的材质/WPO接口仍需要完整构造 FMaterialVertexParameters。
+    const half3x3 TangentToLocal = VertexFactoryGetTangentToLocal(Input, VFIntermediates);
+    
+    // 构造材质顶点参数
+    FMaterialVertexParameters VertexParameters =
+        GetMaterialVertexParameters(Input, VFIntermediates, WorldPosition.xyz, TangentToLocal);
+    // 应用 World Position Offset 经过可能的材质位移和 UE 顶点处理
+    WorldPosition.xyz += GetMaterialWorldPositionOffset(VertexParameters);
+    ApplyMaterialFirstPersonTransform(VertexParameters, WorldPosition.xyz);
+
+    // 取得真正用于光栅化的位置
+    const float4 RasterizedWorldPosition =
+        VertexFactoryGetRasterizedWorldPosition(Input, VFIntermediates, WorldPosition);
+    
+    // 使用 Instance 相机矩阵 InstanceTranslatedWorldToClip 投影顶点
+    Output.Position = INVARIANT(mul(RasterizedWorldPosition, InstanceTranslatedWorldToClip));
+
+#if !MATERIALBLENDING_SOLID
+    Output.FactoryInterpolants =
+        VertexFactoryGetInterpolantsVSToPS(Input, VFIntermediates, VertexParameters);
+    Output.PixelPosition = WorldPosition;
+#endif
+
+#if USE_GLOBAL_CLIP_PLANE
+    OutGlobalClipPlaneDistance =
+        dot(ResolvedView.GlobalClippingPlane, float4(WorldPosition.xyz, 1.0f));
+#endif
+}
+#endif
+
+#if PIXELSHADER
+uint BaseInstanceId;
+uint UseInternalInstanceId;
+
+void MainPS(
+    in INPUT_POSITION_QUALIFIERS float4 SvPosition : SV_Position,
+    nointerpolation float RelativeInstanceId : TEXCOORD7,
+#if !MATERIALBLENDING_SOLID
+    FVertexFactoryInterpolantsVSToPS FactoryInterpolants,
+    float4 PixelPosition : TEXCOORD6,
+    in FStereoPSInput StereoInput
+    OPTIONAL_IsFrontFace,
+#endif
+    out uint OutInstanceId : SV_Target0)
+{
+#if !MATERIALBLENDING_SOLID
+    // Match UE's depth-pass clipping path: pixels below the material's Opacity
+    // Mask threshold are discarded and keep background InstanceId 0.
+    StereoSetupPS(StereoInput);
+    FMaterialPixelParameters MaterialParameters =
+        GetMaterialPixelParameters(FactoryInterpolants, SvPosition);
+    FPixelMaterialInputs PixelMaterialInputs;
+    CalcMaterialParameters(MaterialParameters, PixelMaterialInputs, SvPosition, bIsFrontFace);
+    GetMaterialCoverageAndClipping(MaterialParameters, PixelMaterialInputs);
+#endif
+
+    OutInstanceId = BaseInstanceId +
+        (UseInternalInstanceId != 0u ? uint(RelativeInstanceId) : 0u);
+}
+#endif

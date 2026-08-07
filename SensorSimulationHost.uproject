@@ -1,6 +1,6 @@
 {
   "FileVersion": 3,
-  "EngineAssociation": "AutomotiveStudio_v2.0",
+  "EngineAssociation": "UE_5.7.2_Source_SensorSimulation",
   "Category": "Simulation",
   "Description": "Lightweight UE5 synthetic sensor dataset host.",
   "Modules": [

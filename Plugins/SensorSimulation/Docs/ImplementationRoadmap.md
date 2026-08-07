@@ -9,6 +9,8 @@
 - [x] RGB/Semantic Payload 输出并提交给 `USimulationSubsystem`。
 - [x] Semantic 标签、View Rect、Gamma 与像素格式校验。
 - [x] `SensorSimulationHostEditor Win64 Development` 编译验证。
+- [x] Instance 32 位 Mesh Pass、R32Uint 读回/协议/Writer，以及 D3D11/D3D12 生命周期验收。
+- [x] R15 Phase B 的 ISM/HISM 逐内部实例 ID 与 D3D12 Nanite VisBuffer 专用导出。
 
 仍待完成：
 
@@ -16,7 +18,113 @@
 - [ ] 多个同模态传感器的完成数量追踪。
 - [ ] Frame Timeout、丢帧统计与更完整的背压策略。
 - [ ] 自动化 Demo Map 和运行时像素回归测试。
-- [ ] Instance 32 位整数标签 Pass。
+
+## R13-R14 完成记录（2026-08-02）
+
+- 实现真正的 uint32 Instance 通道，不复用 8 位 CustomStencil。
+- 增加原生 `PF_R32_UINT` 渲染、按 RowPitch 精确读回、`R32Uint/Data/Identifier` 协议校验和 `instance_u32.bin` 文件输出。
+- 显式绑定捕获 View 矩阵以及 Scene/InstanceCulling 静态 Uniform，修复后处理阶段的网格绘制。
+- D3D11 与 D3D12 均完成 `0x01020304` 端到端生命周期及 Writer 验收。
+- R15 Phase A 已完成：Masked Instance Capture 执行源材质 Opacity Mask/WPO，而不是绘制实心代理。
+- 当时 Nanite 与 Translucent 采用显式排除，ISM/HISM 采用组件级身份；这些限制已由下方 Phase B 的当前实现更新。
+
+## R15 特殊渲染对象（Phase A，2026-08-04）
+
+### 为什么要这样做
+
+普通 Opaque Mesh 可以用默认材质重绘完整轮廓，但 Masked、Nanite、Translucent 和 ISM/HISM 的可见性来源不同。如果继续把它们当普通 Mesh，Masked 孔洞会被错误填满，Nanite/Translucent 会静默缺失，ISM/HISM 则容易被误解为每个内部实例都有独立 ID。因此 Renderer 必须同时解决“能精确支持的对象”和“当前不能精确支持时如何明确失败”。
+
+### 如何做
+
+```mermaid
+flowchart LR
+    Register["RegisterPrimitive"] --> Classify{"类型/材质分类"}
+    Classify -->|"Opaque / Masked / Skeletal"| Registry["PrimitiveId -> InstanceId"]
+    Classify -->|"ISM/HISM"| Component["组件级 InstanceId + 明确日志"]
+    Classify -->|"Nanite / Translucent"| Reject["移除映射 + 单次状态诊断"]
+    Registry --> MeshPass["Instance Mesh Pass"]
+    Component --> MeshPass
+    MeshPass -->|"Opaque"| DefaultMaterial["默认材质快速路径"]
+    MeshPass -->|"Masked"| SourceMaterial["源材质 Opacity Mask + WPO"]
+    SourceMaterial --> R32["PF_R32_UINT，孔洞保持 0"]
+    DefaultMaterial --> R32
+```
+
+- `FInstanceCaptureVS/PS::ShouldCompilePermutation` 为 Masked 业务材质生成所需排列。
+- Masked Draw 保留源 `MaterialRenderProxy/FMaterial`，VS 保留 WPO，PS 使用 UE 官方材质覆盖率/裁剪路径执行 Opacity Mask。
+- Opaque Draw 继续使用默认材质，避免无意义的业务材质排列膨胀。
+- Registry 在游戏线程注册时识别 Nanite、Translucent 与 ISM/HISM，并缓存诊断状态，热更新不会重复刷同一条日志。
+- SkeletalMesh 沿动态 Mesh 可见集进入现有 Pass；普通非 Nanite SkeletalMesh 使用组件级对象 ID。
+
+### 当前支持矩阵
+
+| 对象 | Instance 行为 | 当前结论 |
+|---|---|---|
+| Opaque StaticMesh | 默认材质重绘 | 支持 |
+| Masked StaticMesh/foliage | 源材质裁剪并保留 WPO | 支持（经典非 Nanite 路径） |
+| SkeletalMesh | 动态 Mesh 路径、组件级 ID | 支持（非 Nanite） |
+| ISM/HISM | 全部内部实例共享组件 ID | 显式支持组件级语义 |
+| Nanite | 不进入经典 Mesh Pass | 显式拒绝 |
+| Translucent | 尚无唯一前景标签规则 | 显式拒绝，保持背景 |
+
+### 下一步可以怎么优化
+
+- Phase B 为 ISM/HISM 增加 per-instance GPU 数据源，使每个内部实例写独立 uint32 ID。
+- 为 Nanite 增加专用可编程 Raster/Material Export 路径，不能用经典 MeshBatch 假装支持。
+- 先确定 Translucent 的产品规则（忽略、最前表面、Opacity 阈值或多层标签），再实现对应渲染路径。
+- 增加 Masked foliage、SkeletalMesh 动画、Nanite 拒绝、Translucent 拒绝和 ISM/HISM 组件级行为的 D3D11/D3D12 像素回归。
+
+## R15 阶段 B 实施审计（2026-08-07，部分完成：ISM/HISM 与 Nanite 已闭环）
+
+### 为什么要这样做
+
+汽车和机器人场景会大量使用 ISM/HISM、Nanite 车身或环境资产以及玻璃等半透明材质。若这些对象只写组件级 ID、静默缺失或采用未定义的透明规则，遮挡关系、实例级跟踪和训练标签都会失真。因此 R15 必须以“像素结果可证明正确”为完成标准，不能只以 Shader 能编译为准。
+
+### 当前如何做
+
+```mermaid
+flowchart LR
+    Registry["Primitive 注册表<br/>PrimitiveComponentId → BaseId/内部实例策略"]
+    Classic["经典 Mesh Pass<br/>Opaque/Masked/Skeletal/ISM/HISM"]
+    Context["Renderer 短生命周期上下文"]
+    Vis["Nanite VisBuffer64<br/>VisibleClustersSWHW"]
+    Decode["Nanite 全屏导出<br/>PrimitiveId + RelativeId"]
+    Depth["共用 Pass 独立反向 Z 深度"]
+    Target["PF_R32_UINT Instance Target"]
+    Readback["异步 Readback + 合法 ID 校验"]
+
+    Registry --> Classic --> Depth
+    Context --> Vis --> Decode
+    Registry --> Decode --> Depth
+    Depth --> Target --> Readback
+```
+
+- [x] 语义注册表为 Actor 本体及其 ISM/HISM 内部实例预留连续的 32 位 ID 区间，并把全部合法值交给 Payload 校验。
+- [x] Instance 注册绑定已携带连续区间起点、是否使用内部实例编号及实例数量；Shader 已能计算 BaseInstanceId + RelativeId。
+- [x] 半透明产品策略确定为“忽略透明表面”：半透明自身不写 Instance，也不占用本 Pass 深度；其后的最近受支持不透明表面可以写入标签。玻璃材质本身若需要类别/实例标签，应另设不透明代理几何体。
+- [x] 半透明对象继续显式诊断；Nanite 不再进入经典 MeshBatch，而是由专用 VisBuffer 导出路径处理。
+- [x] UE 5.7.2 Renderer 在 `AddPostProcessingPasses` 调用栈内提供短生命周期扩展上下文，插件可借用当前 `FInstanceCullingManager`，但不得跨帧缓存指针。
+- [x] Instance Pass 已由 Dummy Uniform 的 `AddDrawDynamicMeshPass` 改为 `AddSimpleMeshPass`，复用正式 GPU Scene 实例裁剪和 Primitive-ID 流。
+- [x] Shader 同时覆盖 `USE_INSTANCING` 与 `USE_INSTANCE_CULLING`；ISM/HISM 的每个内部实例写 `BaseInstanceId + RelativeId`，两个实例的强制像素断言已在 D3D11/D3D12 通过。
+- [x] Nanite 专用路径在 `NaniteRasterResults` 存活期读取 `VisBuffer64` 与 `VisibleClustersSWHW`，由 GPU Scene `PrimitiveId/RelativeId` 映射稳定 32 位 InstanceId，并与经典 Mesh Pass 共用独立反向 Z 深度。
+- [x] 自包含 D3D12 回归在测试中把 Engine Cube 临时构建为 Nanite；回读同时强制断言 Nanite ID 与两个 ISM 内部实例 ID。
+- [ ] Masked foliage、SkeletalMesh、独立 HISM 与半透明遮挡的完整特殊对象矩阵尚未全部完成，因此整个 R15 仍保持“部分完成”。
+
+### 验证证据
+
+- UE 5.7.2 `SensorSimulationHostEditor Win64 Development`：31/31 Renderer/插件增量动作通过；断言升级后 4/4 测试模块增量动作通过。
+- D3D12：`Saved/Acceptance/R15_SpecialObjects/UE572_OfficialRenderer/D3D12_ISM_RequiredAssertion.log`，观察到 `16909061:20` 与 `16909062:19`，用例成功。
+- D3D11：`Saved/Acceptance/R15_SpecialObjects/UE572_OfficialRenderer/D3D11_ISM_RequiredAssertion.log`，观察到 `16909061:20` 与 `16909062:20`，用例成功。
+- D3D12 Nanite：`Saved/Logs/R15_NanitePixelDiscardFix_DX12.log`，观察到 Nanite `16909312:20`、ISM `16909061:20` 和 `16909062:20`，用例成功。
+- Nanite Shader 的每条 `discard` 路径会先初始化颜色与深度输出，与 UE 官方 HitProxy 导出契约一致；失败探针证明省略该初始化会使整数目标回读为全背景。
+- 失败探针 `D3D12_ISM_FormalCulling_Run2.log` 证明只接入正式裁剪仍不足；随后补齐 `USE_INSTANCE_CULLING` Shader 分支，形成可复现的根因—修复—回归证据链。
+
+### 下一步怎么做
+
+1. [x] 已在 Renderer 后处理调用栈增加最小只读上下文，并用正式 `FInstanceCullingManager` 闭环 ISM/HISM 逐内部实例 ID。
+2. [x] 已在 `NaniteRasterResults` 存活期增加只读导出 Pass，解码 VisBuffer 并映射稳定 InstanceId；D3D12 真实像素断言通过。
+3. 补齐独立 HISM、Masked foliage、SkeletalMesh 和半透明遮挡用例，形成 D3D11（经典路径）与 D3D12（经典 + Nanite）特殊对象像素矩阵，再把整个 R15 标记为完成。
+4. 将引擎改动维护为可重复应用的补丁，并增加“官方 UE 版本变化后接口仍存在”的编译守卫，降低后续升级成本。
 
 ## Render Pipeline Owner
 
@@ -119,10 +227,30 @@ Renderer 模块只应负责捕获和读回，不能反向依赖 Runtime Subsyste
 
 #### 下一步可以怎么优化
 
-- 当前 `EPayloadType` 是模态位集合，同一帧存在两台 RGB 相机时，第一台到达就会把 RGB 位标记完成。后续应按“传感器名 + 模态”记录预期数量。
+- [x] FrameAssembler 已按稳定 `SensorGuid + ChannelGuid` 记录逐图像通道完成状态；同名传感器以及同一传感器的同模态多配置互不覆盖。
 - Adapter 可增加采样频率调度，避免所有相机完全依赖 Subsystem 的全局固定步长。
-- 读回队列满时应把失败状态反馈给 FrameAssembler，使帧超时或明确丢弃，而不是永久等待。
-- 把完成 Payload 送入 Export Worker 的无锁队列，避免文件编码占用游戏线程。
+- [x] `RequestCapture` 已返回 `Accepted/Busy/Rejected`；队列 Busy 或资源 Rejected 会立即反馈给 FrameAssembler 并终止帧。
+- [x] 完成 Payload 已送入有界 Export Worker 队列，文件编码不占用游戏线程。
+- 下一步可增加 Pending Frame 容量上限，并将终态历史容量与拒绝策略参数化。
+
+### 3.1 [x] 图像通道寻址升级为 ChannelGuid
+
+#### 为什么要这样做
+
+`ChannelType` 只能说明图像是 RGB、Semantic、Depth 或 Instance，不能唯一表示某条配置。若同一类型出现两次，按类型查询会拿到第一张 RenderTarget，按模态完成计数会提前结束帧，文件也可能覆盖。
+
+#### 如何做
+
+- `FCaptureRequest::ExpectedImageChannels` 显式携带每条 `ChannelGuid + PayloadType`。
+- Camera Rig 允许同一 `ChannelType` 多配置，资源创建、热更新复用、RenderTarget 和像素格式查询以 ChannelGuid 寻址。
+- Readback 把 ChannelGuid 固化到任务键和 `FImagePayload`；指标按 `SensorGuid + ChannelGuid` 隔离。
+- FrameAssembler 分别等待每个 ChannelGuid，并按 ChannelGuid 判断重复 Payload。
+- 图像 Writer 始终使用完整 ChannelGuid 后缀，frame/session metadata 同步写出该身份。
+
+#### 下一步可以怎么优化
+
+- 为 Blueprint 调试入口增加可选择 ChannelGuid 的下拉或详情面板；当前按模态的保存按钮默认选择第一条对应通道。
+- 把无效/重复 ChannelGuid 从日志校验提升为配置资产的数据验证规则。
 
 ### 4. [x] 验证标签合法值、View Rect、Gamma 和像素格式
 

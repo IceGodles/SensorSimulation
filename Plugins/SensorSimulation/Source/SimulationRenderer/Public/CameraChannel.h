@@ -20,6 +20,15 @@ struct SIMULATIONRENDERER_API FCameraChannelConfig
 {
     GENERATED_BODY()
 
+    /**
+     * 使用全局唯一标识符来表示通道的持久身份。
+     *
+     * ChannelType 描述“输出什么”，ChannelGuid 描述“是哪一条配置”。分离两者后，
+     * 数组重排或未来同模态扩展不会让 Calibration 和运行时资源错误地串到另一通道。
+     */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Sensor")
+    FGuid ChannelGuid;
+
     /** 此相机通道需要生成的 RGB、语义、深度或实例模态。 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sensor")
     ECameraChannelType ChannelType = ECameraChannelType::Rgb;

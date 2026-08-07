@@ -109,20 +109,42 @@ struct FExportService::FImpl : public FRunnable
         // 写出 RGB 和 Semantic 图像
         for (const FImagePayload& Image : Packet.Images)
         {
+            if (!Image.ChannelGuid.IsValid())
+            {
+                UE_LOG(LogTemp, Error,
+                    TEXT("Cannot export image without ChannelGuid: frame=%llu sensor=%s type=%u."),
+                    Packet.Header.FrameId, *Image.SensorName.ToString(), static_cast<uint8>(Image.PayloadType));
+                bSuccess = false;
+                continue;
+            }
+            // 文件身份只由完整 ChannelGuid 决定；同模态多配置及传感器改名都不会覆盖。
+            const FString IdentitySuffix = TEXT("_") + Image.ChannelGuid.ToString(EGuidFormats::Digits);
             if (Image.PayloadType == EPayloadType::Rgb)
             {
-                bSuccess &= WritePng(FrameDir / TEXT("rgb.png"), Image);
+                bSuccess &= WritePng(FrameDir / (TEXT("rgb") + IdentitySuffix + TEXT(".png")), Image);
             }
             else if (Image.PayloadType == EPayloadType::Semantic)
             {
-                bSuccess &= WritePng(FrameDir / TEXT("semantic.png"), Image);
+                bSuccess &= WritePng(FrameDir / (TEXT("semantic") + IdentitySuffix + TEXT(".png")), Image);
+            }
+            else if (Image.PayloadType == EPayloadType::Depth)
+            {
+                bSuccess &= FFileHelper::SaveArrayToFile(Image.Bytes, *(FrameDir / (TEXT("depth_meters_f32") + IdentitySuffix + TEXT(".bin"))));
+            }
+            else if (Image.PayloadType == EPayloadType::Instance)
+            {
+                // 保留原始小端 uint32 标识符，避免 PNG/颜色编码截断或改写 InstanceId。
+                bSuccess &= FFileHelper::SaveArrayToFile(Image.Bytes, *(FrameDir / (TEXT("instance_u32") + IdentitySuffix + TEXT(".bin"))));
             }
         }
 
         // 写出 LiDAR 点云
         for (const FLidarScanPayload& Scan : Packet.LidarScans)
         {
-            bSuccess &= WriteLidarBin(FrameDir / TEXT("lidar.bin"), Scan);
+            const FString IdentitySuffix = Packet.LidarScans.Num() > 1
+                ? TEXT("_") + Scan.SensorGuid.ToString(EGuidFormats::Digits).Left(8)
+                : FString();
+            bSuccess &= WriteLidarBin(FrameDir / (TEXT("lidar") + IdentitySuffix + TEXT(".bin")), Scan);
         }
 
         // 写出 Ground Truth
@@ -268,6 +290,26 @@ struct FExportService::FImpl : public FRunnable
         Writer->WriteValue(TEXT("image_count"), Packet.Images.Num());
         Writer->WriteValue(TEXT("lidar_scan_count"), Packet.LidarScans.Num());
         Writer->WriteValue(TEXT("object_count"), Packet.Objects.Num());
+        Writer->WriteArrayStart(TEXT("images"));
+        for (const FImagePayload& Image : Packet.Images)
+        {
+            Writer->WriteObjectStart();
+            Writer->WriteValue(TEXT("sensor_guid"), Image.SensorGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
+            Writer->WriteValue(TEXT("sensor_name"), Image.SensorName.ToString());
+            Writer->WriteValue(TEXT("channel_guid"), Image.ChannelGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
+            Writer->WriteValue(TEXT("payload_type"), static_cast<int32>(Image.PayloadType));
+            Writer->WriteObjectEnd();
+        }
+        Writer->WriteArrayEnd();
+        Writer->WriteArrayStart(TEXT("lidar_scans"));
+        for (const FLidarScanPayload& Scan : Packet.LidarScans)
+        {
+            Writer->WriteObjectStart();
+            Writer->WriteValue(TEXT("sensor_guid"), Scan.SensorGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
+            Writer->WriteValue(TEXT("sensor_name"), Scan.SensorName.ToString());
+            Writer->WriteObjectEnd();
+        }
+        Writer->WriteArrayEnd();
         Writer->WriteObjectEnd();
         Writer->Close();
 

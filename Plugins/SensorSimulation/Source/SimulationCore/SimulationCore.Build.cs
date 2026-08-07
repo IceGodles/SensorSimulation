@@ -7,6 +7,6 @@ public class SimulationCore : ModuleRules
     public SimulationCore(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-        PublicDependencyModuleNames.AddRange(new[] { "Core" });
+        PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject" });
     }
 }

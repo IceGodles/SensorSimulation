@@ -23,28 +23,69 @@ void USimCameraSensorComponent::BeginPlay()
     if (CameraRig)
     {
         SensorName = CameraRig->SensorName;
-
-        // 注册相机标定参数到 Subsystem，用于会话结束时写出 calibration.json
-        if (UWorld* World = GetWorld())
-        {
-            if (USimulationSubsystem* Subsystem = World->GetSubsystem<USimulationSubsystem>())
-            {
-                // 为第一个启用的通道注册标定
-                const TArray<FCameraChannelConfig>& Channels = CameraRig->Channels;
-                for (const FCameraChannelConfig& Channel : Channels)
-                {
-                    if (Channel.bEnabled)
-                    {
-                        Subsystem->RegisterCalibration(CameraRig->BuildCalibration(Channel));
-                        break;
-                    }
-                }
-            }
-        }
+        // Calibration 依赖 Resolution/FOV；监听热更新可防止会话文件继续保存启动时的旧内参。
+        CameraRig->OnConfigurationChanged().AddUObject(
+            this,
+            &USimCameraSensorComponent::RegisterCurrentCalibration);
+        RegisterCurrentCalibration();
+        RegisterCurrentRendererMetrics();
     }
     Super::BeginPlay();
 }
 
+/** 解除配置通知，避免组件结束后继续接收热更新回调。 */
+void USimCameraSensorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (CameraRig)
+    {
+        // EndPlay 可能先于 Subsystem::Deinitialize，先提交最终快照才能进入会话 metadata。
+        RegisterCurrentRendererMetrics();
+        CameraRig->OnConfigurationChanged().RemoveAll(this);
+    }
+    Super::EndPlay(EndPlayReason);
+}
+
+/** 把每条正式图像通道的最新内外参分别更新到 Dataset Session。 */
+void USimCameraSensorComponent::RegisterCurrentCalibration()
+{
+    if (!CameraRig)
+    {
+        return;
+    }
+
+    SensorName = CameraRig->SensorName;
+    if (UWorld* World = GetWorld())
+    {
+        if (USimulationSubsystem* Subsystem = World->GetSubsystem<USimulationSubsystem>())
+        {
+            // RuntimeChannels 已排除重复、禁用和 Instance 占位，因此这里不会生成无法对应正式图像的标定项。
+            for (FCalibration Calibration : CameraRig->BuildActiveCalibrations())
+            {
+                Calibration.SensorGuid = SensorGuid;
+                Subsystem->RegisterCalibration(Calibration);
+            }
+        }
+    }
+}
+
+/** 采集 Camera Rig 的可观测性快照，并按 SensorGuid 更新当前 Dataset Session。 */
+void USimCameraSensorComponent::RegisterCurrentRendererMetrics()
+{
+    if (!CameraRig || !GetWorld())
+    {
+        return;
+    }
+    if (USimulationSubsystem* Subsystem = GetWorld()->GetSubsystem<USimulationSubsystem>())
+    {
+        FCameraRendererMetricsSnapshot Metrics;
+        Metrics.SensorName = CameraRig->SensorName;
+        Metrics.SensorGuid = SensorGuid;
+        Metrics.ResourceStats = CameraRig->GetResourceStats();
+        Metrics.ReadbackStats = CameraRig->GetImageReadbackStats();
+        Metrics.ChannelStats = CameraRig->GetImageReadbackChannelStats();
+        Subsystem->RegisterRendererMetrics(Metrics);
+    }
+}
 /** 清空完成队列并将拥有独立 CPU 内存的图像载荷移交给 Subsystem。 */
 void USimCameraSensorComponent::TickComponent(
     float DeltaTime,
@@ -52,6 +93,14 @@ void USimCameraSensorComponent::TickComponent(
     FActorComponentTickFunction* ThisTickFunction)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+    RendererMetricsElapsedSeconds += DeltaTime;
+    if (RendererMetricsElapsedSeconds >= 1.0)
+    {
+        // 一秒级采样足以诊断长期背压，同时避免逐帧获取 ChannelStats 锁。
+        RendererMetricsElapsedSeconds = 0.0;
+        RegisterCurrentRendererMetrics();
+    }
+
     if (!CameraRig || !GetWorld())
     {
         return;
@@ -77,17 +126,34 @@ EPayloadType USimCameraSensorComponent::GetPayloadTypes() const
     return CameraRig ? CameraRig->GetEnabledPayloadTypes() : EPayloadType::None;
 }
 
+/** 返回 Camera Rig 当前实际创建的独立图像通道。 */
+TArray<FExpectedImageChannel> USimCameraSensorComponent::GetExpectedImageChannels() const
+{
+    return CameraRig ? CameraRig->GetEnabledImageChannels() : TArray<FExpectedImageChannel>{};
+}
+
 /** 转发本帧请求，并补充 Camera Rig 相对于自车的外参。 */
-void USimCameraSensorComponent::RequestCapture(const FCaptureRequest& Request)
+ECaptureRequestResult USimCameraSensorComponent::RequestCapture(const FCaptureRequest& Request)
 {
     if (!bSensorEnabled || !CameraRig)
     {
-        return;
+        return ECaptureRequestResult::Rejected;
     }
+
+    // 先应用配置 Diff，再计算本帧能力位；否则刚启用的通道要到下一帧才会进入 ExpectedPayloads。
+    CameraRig->ApplyConfiguration();
+    SensorName = CameraRig->SensorName;
 
     FCaptureRequest CameraRequest = Request;
     CameraRequest.SensorName = SensorName;
+    CameraRequest.SensorGuid = SensorGuid;
     CameraRequest.SensorToEgo = CameraRig->GetRelativeTransform();
-    CameraRequest.ExpectedPayloads &= GetPayloadTypes();
-    CameraRig->SubmitCapture(CameraRequest);
+    CameraRequest.ExpectedPayloads &= CameraRig->GetEnabledPayloadTypes();
+    const TArray<FExpectedImageChannel> ActiveChannels = CameraRig->GetEnabledImageChannels();
+    CameraRequest.ExpectedImageChannels.RemoveAll(
+        [&ActiveChannels](const FExpectedImageChannel& Expected)
+        {
+            return !ActiveChannels.Contains(Expected);
+        });
+    return CameraRig->SubmitCapture(CameraRequest);
 }

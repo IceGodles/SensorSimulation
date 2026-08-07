@@ -67,7 +67,7 @@ public:
     /** 返回该传感器生产 LiDAR 模态。 */
     virtual EPayloadType GetPayloadTypes() const override { return EPayloadType::Lidar; }
     /** 在传感器空闲且启用时初始化一次新的采集任务。 */
-    virtual void RequestCapture(const FCaptureRequest& Request) override;
+    virtual ECaptureRequestResult RequestCapture(const FCaptureRequest& Request) override;
 
 /** 返回扫描完成事件，供调用方绑定监听器。 */
     FOnLidarScanComplete& OnScanComplete() { return ScanCompleteDelegate; }

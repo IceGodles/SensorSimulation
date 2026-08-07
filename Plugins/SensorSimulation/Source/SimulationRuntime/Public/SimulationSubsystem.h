@@ -40,8 +40,10 @@ public:
     bool SubmitImage(FImagePayload&& Image);
 /** 把完成的点云移交给帧聚合器。 */
     void SubmitLidar(FLidarScanPayload&& Scan);
-/** 注册相机标定参数，会话结束时写入 calibration.json。 */
+/** 注册单通道相机标定参数，会话结束时写入 calibration.json。 */
     void RegisterCalibration(const FCalibration& Calibration);
+    /** 注册 Camera Rig 的最新资源与 Readback 指标，会话结束时写入 metadata.json。 */
+    void RegisterRendererMetrics(const FCameraRendererMetricsSnapshot& Metrics);
 
 /** 返回当前等待所有模态到齐的帧数量。 */
     int32 GetPendingFrameCount() const { return FrameAssembler.GetPendingFrameCount(); }

@@ -1,5 +1,6 @@
 #include "SimulationRenderer.h"
 #include "SemanticCaptureViewExtension.h"
+#include "InstanceCaptureViewExtension.h"
 #include "Engine/Engine.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/CoreDelegates.h"
@@ -12,6 +13,7 @@ namespace
 {
 /** 模块持有 View Extension，保证后处理委托使用期间对象始终有效。 */
 TSharedPtr<FSemanticCaptureViewExtension, ESPMode::ThreadSafe> SemanticCaptureViewExtension;
+TSharedPtr<FInstanceCaptureViewExtension, ESPMode::ThreadSafe> InstanceCaptureViewExtension;
 
 /** GEngine 创建后才能向 FSceneViewExtensions 注册扩展。 */
 FDelegateHandle PostEngineInitHandle;
@@ -22,6 +24,11 @@ void InitializeSemanticCaptureViewExtension()
     if (!SemanticCaptureViewExtension.IsValid())
     {
         SemanticCaptureViewExtension = FSceneViewExtensions::NewExtension<FSemanticCaptureViewExtension>();
+    }
+    if (!InstanceCaptureViewExtension.IsValid())
+    {
+        // Instance Extension 使用独立 Mesh Pass 写整数目标，不参与 Semantic 的 Tonemap 回调。
+        InstanceCaptureViewExtension = FSceneViewExtensions::NewExtension<FInstanceCaptureViewExtension>();
     }
 }
 }
@@ -56,6 +63,7 @@ void FSimulationRendererModule::ShutdownModule()
         FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
         PostEngineInitHandle.Reset();
     }
+    InstanceCaptureViewExtension.Reset();
     SemanticCaptureViewExtension.Reset();
 }
 

@@ -1,12 +1,26 @@
 #include "SemanticRegistry.h"
+#include "SemanticImageLabel.h"
 #include "SemanticObjectComponent.h"
 #include "GameFramework/Actor.h"
 
 /** 为语义对象分配唯一实例编号并建立 Actor 到组件的弱引用映射。 */
 uint32 FSemanticRegistry::Register(USemanticObjectComponent& Component)
 {
-    const uint32 InstanceId = NextInstanceId++;
-    Component.SetAssignedInstanceId(InstanceId);
+    const uint32 RequiredCount = Component.GetRequiredInstanceIdCount();
+    const uint64 EndExclusive = NextInstanceId + RequiredCount;
+    if (RequiredCount == 0 || EndExclusive > static_cast<uint64>(MAX_uint32) + 1u)
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("InstanceId namespace exhausted while registering '%s' (%u IDs requested)."),
+            *GetNameSafe(Component.GetOwner()),
+            RequiredCount);
+        Component.SetAssignedInstanceId(0);
+        return 0;
+    }
+
+    const uint32 InstanceId = static_cast<uint32>(NextInstanceId);
+    NextInstanceId = EndExclusive;
+    Component.SetAssignedInstanceId(InstanceId, RequiredCount);
     Entries.Add(Component.GetOwner(), &Component);
     return InstanceId;
 }
@@ -28,12 +42,35 @@ const USemanticObjectComponent* FSemanticRegistry::Find(const AActor* Actor) con
 void FSemanticRegistry::GetImageSemanticIds(TSet<uint8>& OutIds) const
 {
     OutIds.Reset();
+    OutIds.Add(static_cast<uint8>(UE::SensorSimulation::SemanticLabels::BackgroundId));
+    for (const TPair<TWeakObjectPtr<const AActor>, TWeakObjectPtr<USemanticObjectComponent>>& Entry : Entries)
+    {
+        if (const USemanticObjectComponent* Component = Entry.Value.Get())
+        {
+            uint8 ImageId = 0;
+            if (UE::SensorSimulation::SemanticLabels::TryConvertToImageId(Component->SemanticId, ImageId))
+            {
+                OutIds.Add(ImageId);
+            }
+        }
+    }
+}
+
+/** 收集背景 0 与所有仍有效对象的完整 32 位实例编号。 */
+void FSemanticRegistry::GetInstanceIds(TSet<uint32>& OutIds) const
+{
+    OutIds.Reset();
     OutIds.Add(0);
     for (const TPair<TWeakObjectPtr<const AActor>, TWeakObjectPtr<USemanticObjectComponent>>& Entry : Entries)
     {
         if (const USemanticObjectComponent* Component = Entry.Value.Get())
         {
-            OutIds.Add(static_cast<uint8>(FMath::Clamp(Component->SemanticId, 0, 255)));
+            const uint32 InstanceId = static_cast<uint32>(Component->InstanceId);
+            const uint32 Count = Component->GetAllocatedInstanceIdCount();
+            for (uint32 Offset = 0; InstanceId != 0 && Offset < Count; ++Offset)
+            {
+                OutIds.Add(InstanceId + Offset);
+            }
         }
     }
 }

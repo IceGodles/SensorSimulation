@@ -16,7 +16,7 @@ void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     const USimulationSettings* Settings = GetDefault<USimulationSettings>();
 
     // 确定性模式下设置固定随机种子，保证可复现性
-    if (Settings->SimulationMode == ERuntimeMode::DeterministicDataset)
+    if (Settings->SimulationMode == ESimulationMode::DeterministicDataset)
     {
         FMath::RandInit(Settings->RandomSeed);
         FMath::SRandInit(Settings->RandomSeed);
@@ -54,11 +54,13 @@ void USimulationSubsystem::Deinitialize()
     {
         const USimulationSettings* Settings = GetDefault<USimulationSettings>();
         const FFrameAssemblerStats& Stats = FrameAssembler.GetStats();
-        const FString Mode = Settings->SimulationMode == ERuntimeMode::DeterministicDataset
+        const FString Mode = Settings->SimulationMode == ESimulationMode::DeterministicDataset
             ? TEXT("DeterministicDataset") : TEXT("Realtime");
 
         DatasetSession->WriteMetadata(
-            Stats.TotalFrames, Stats.CompletedFrames, Stats.FailedFrames + Stats.TimeoutFrames,
+            Stats.TotalFrames, Stats.CompletedFrames, Stats.FailedFrames,
+            Stats.TimeoutFrames, Stats.BusyFrames, Stats.RejectedFrames,
+            Stats.DuplicatePayloads, Stats.LatePayloads,
             Settings->RandomSeed, Mode);
         DatasetSession->Stop();
     }
@@ -80,7 +82,7 @@ void USimulationSubsystem::Tick(float DeltaTime)
 
     // 确定性模式下，等待所有待处理帧完成后再请求新帧，保证严格顺序
     const bool bCanRequestNewFrame =
-        Settings->SimulationMode == ERuntimeMode::DeterministicDataset
+        Settings->SimulationMode == ESimulationMode::DeterministicDataset
             ? FrameAssembler.GetPendingFrameCount() == 0
             : true;
 
@@ -100,7 +102,7 @@ void USimulationSubsystem::Tick(float DeltaTime)
         if (ExportService)
         {
             EExportBackpressurePolicy Policy = EExportBackpressurePolicy::RejectNewest;
-            if (Settings->SimulationMode == ERuntimeMode::DeterministicDataset)
+            if (Settings->SimulationMode == ESimulationMode::DeterministicDataset)
             {
                 Policy = EExportBackpressurePolicy::BlockDatasetClock;
             }
@@ -168,6 +170,15 @@ void USimulationSubsystem::RegisterCalibration(const FCalibration& Calibration)
     }
 }
 
+/** 把 Camera Rig 的最新 Renderer 指标转交给当前 Dataset Session。 */
+void USimulationSubsystem::RegisterRendererMetrics(const FCameraRendererMetricsSnapshot& Metrics)
+{
+    if (DatasetSession)
+    {
+        DatasetSession->RegisterRendererMetrics(Metrics);
+    }
+}
+
 /** 创建同步帧、采集真值并向所有启用的传感器下发请求。 */
 void USimulationSubsystem::RequestFrame(double TimestampSeconds)
 {
@@ -197,29 +208,59 @@ void USimulationSubsystem::RequestFrame(double TimestampSeconds)
         }
 
         const EPayloadType SensorPayloads = Sensor->GetPayloadTypes();
+        const TArray<FExpectedImageChannel> ExpectedImageChannels = Sensor->GetExpectedImageChannels();
 
-        // 注册传感器的预期模态，用于多传感器精确完成计数
-        FrameAssembler.RegisterSensor(Header.FrameId, Sensor->SensorName, SensorPayloads);
+        // 同时登记帧级模态和逐 ChannelGuid 图像预期；同模态多配置必须分别完成。
+        FrameAssembler.RegisterSensor(
+            Header.FrameId, Sensor->SensorGuid, Sensor->SensorName,
+            SensorPayloads, ExpectedImageChannels);
 
         FCaptureRequest Request;
         Request.Header = Header;
         Request.SensorName = Sensor->SensorName;
+        Request.SensorGuid = Sensor->SensorGuid;
         Request.ExpectedPayloads = SensorPayloads;
-        Sensor->RequestCapture(Request);
+        Request.ExpectedImageChannels = ExpectedImageChannels;
+        const ECaptureRequestResult Result = Sensor->RequestCapture(Request);
+        if (Result != ECaptureRequestResult::Accepted)
+        {
+            FrameAssembler.FailFrame(
+                Header.FrameId,
+                Sensor->SensorGuid,
+                Sensor->SensorName,
+                Result);
+            // 当前帧已经进入 Failed 终态；不再向后续传感器制造必然迟到的工作。
+            break;
+        }
     }
 }
 
-/** 验证紧密 RGBA8 图像布局，以及 Semantic 的通道值和注册标签集合。 */
+/** 验证紧密图像布局，以及 Semantic/Instance 标签集合和 Depth 格式。 */
 bool USimulationSubsystem::ValidateImagePayload(const FImagePayload& Image) const
 {
-    if ((Image.PayloadType != EPayloadType::Rgb && Image.PayloadType != EPayloadType::Semantic)
-        || Image.ImageSize.X <= 0 || Image.ImageSize.Y <= 0 || Image.BytesPerPixel != 4)
+    const bool bRgba8 =
+        (Image.PayloadType == EPayloadType::Rgb || Image.PayloadType == EPayloadType::Semantic) &&
+        Image.PixelFormat == EImagePixelFormat::Rgba8;
+    const bool bDepth =
+        Image.PayloadType == EPayloadType::Depth &&
+        Image.PixelFormat == EImagePixelFormat::R32Float &&
+        Image.ColorSpace == EImageColorSpace::Data &&
+        Image.ValueUnit == EImageValueUnit::Meters;
+    const bool bInstance =
+        Image.PayloadType == EPayloadType::Instance &&
+        Image.PixelFormat == EImagePixelFormat::R32Uint &&
+        Image.ColorSpace == EImageColorSpace::Data &&
+        Image.ValueUnit == EImageValueUnit::Identifier;
+    if ((!bRgba8 && !bDepth && !bInstance)
+        || Image.ImageSize.X <= 0
+        || Image.ImageSize.Y <= 0
+        || Image.BytesPerPixel != 4)
     {
         return false;
     }
     const int64 RequiredBytes = static_cast<int64>(Image.ImageSize.X)
         * static_cast<int64>(Image.ImageSize.Y) * Image.BytesPerPixel;
-    if (RequiredBytes != Image.Bytes.Num())
+    if (RequiredBytes != Image.Bytes.Num() || Image.RowStrideBytes != Image.ImageSize.X * Image.BytesPerPixel)
     {
         return false;
     }
@@ -234,6 +275,20 @@ bool USimulationSubsystem::ValidateImagePayload(const FImagePayload& Image) cons
                 || Image.Bytes[PixelOffset + 1] != 0
                 || Image.Bytes[PixelOffset + 2] != 0
                 || Image.Bytes[PixelOffset + 3] != 255)
+            {
+                return false;
+            }
+        }
+    }
+    else if (Image.PayloadType == EPayloadType::Instance)
+    {
+        TSet<uint32> ValidIds;
+        SemanticRegistry.GetInstanceIds(ValidIds);
+        for (int64 PixelOffset = 0; PixelOffset < RequiredBytes; PixelOffset += sizeof(uint32))
+        {
+            uint32 InstanceId = 0;
+            FMemory::Memcpy(&InstanceId, Image.Bytes.GetData() + PixelOffset, sizeof(uint32));
+            if (!ValidIds.Contains(InstanceId))
             {
                 return false;
             }
@@ -261,7 +316,8 @@ TArray<FObjectGroundTruth> USimulationSubsystem::CaptureGroundTruth() const
         }
 
         FObjectGroundTruth& Item = Output.AddDefaulted_GetRef();
-        Item.InstanceId = static_cast<uint32>(FMath::Max(0, Semantic->InstanceId));
+        Item.InstanceId =
+            Semantic->InstanceId > 0 ? static_cast<uint32>(Semantic->InstanceId) : 0u;
         Item.SemanticId = static_cast<uint16>(FMath::Clamp(Semantic->SemanticId, 0, 65535));
         Item.WorldTransform = Actor->GetActorTransform();
         Item.WorldBounds = FBox3d(Actor->GetComponentsBoundingBox(true));
