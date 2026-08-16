@@ -1,0 +1,15 @@
+{
+  "name": "SensorSimulation Renderer post-process context",
+  "patchVersion": 1,
+  "engineVersion": { "major": 5, "minor": 7, "patch": 2, "officialTag": "5.7.2-release", "compatibleChangelist": 47537391 },
+  "files": [
+    "Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.h",
+    "Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.cpp"
+  ],
+  "api": {
+    "contextType": "UE::Renderer::PostProcess::FExtensionContext",
+    "getter": "UE::Renderer::PostProcess::GetExtensionContext_RenderThread",
+    "members": ["InstanceCullingManager", "NaniteRasterResults"],
+    "lifetime": "AddPostProcessingPasses call stack only"
+  }
+}

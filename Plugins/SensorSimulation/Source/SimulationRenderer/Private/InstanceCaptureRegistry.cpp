@@ -8,6 +8,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Misc/ScopeRWLock.h"
 #include "PrimitiveSceneProxy.h"
+#include "Engine/World.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogInstanceCaptureRegistry, Log, All);
 
@@ -20,6 +21,9 @@ FRWLock RegistryLock;
 
 /** 稳定组件标识到普通/逐内部实例身份绑定的映射。 */
 TMap<FPrimitiveComponentId, FPrimitiveInstanceBinding> PrimitiveInstanceBindings;
+
+/** 当前有效的不透明标签代理；弱引用避免延长组件生命周期。 */
+TSet<TWeakObjectPtr<UPrimitiveComponent>> OpaqueLabelProxies;
 
 /** 每个图元最近一次的 R15 支持状态，用于避免热更新时重复输出相同诊断。 */
 enum class EPrimitiveSupport : uint8
@@ -171,6 +175,61 @@ void UnregisterPrimitive(const UPrimitiveComponent* Primitive)
     PrimitiveSupportStates.Remove(PrimitiveId);
 }
 
+/** 返回图元当前是否有非零 Instance 绑定；读锁允许与渲染线程查询并发。 */
+bool IsPrimitiveRegistered(const UPrimitiveComponent* Primitive)
+{
+    if (!Primitive)
+    {
+        return false;
+    }
+    FReadScopeLock ScopeLock(RegistryLock);
+    const FPrimitiveInstanceBinding* Binding =
+        PrimitiveInstanceBindings.Find(Primitive->GetPrimitiveSceneId());
+    return Binding && Binding->BaseInstanceId != 0;
+}
+
+/** 登记只供标签捕获使用的不透明代理。 */
+void RegisterOpaqueLabelProxy(UPrimitiveComponent* Primitive)
+{
+    if (!Primitive)
+    {
+        return;
+    }
+    FWriteScopeLock ScopeLock(RegistryLock);
+    OpaqueLabelProxies.Add(Primitive);
+}
+
+/** 注销标签代理并顺便清理失效弱引用。 */
+void UnregisterOpaqueLabelProxy(UPrimitiveComponent* Primitive)
+{
+    FWriteScopeLock ScopeLock(RegistryLock);
+    if (Primitive)
+    {
+        OpaqueLabelProxies.Remove(Primitive);
+    }
+    for (auto It = OpaqueLabelProxies.CreateIterator(); It; ++It)
+    {
+        if (!It->IsValid())
+        {
+            It.RemoveCurrent();
+        }
+    }
+}
+
+/** 返回指定 World 的有效标签代理快照。 */
+TArray<TWeakObjectPtr<UPrimitiveComponent>> GetOpaqueLabelProxies(const UWorld* World)
+{
+    TArray<TWeakObjectPtr<UPrimitiveComponent>> Result;
+    FReadScopeLock ScopeLock(RegistryLock);
+    for (const TWeakObjectPtr<UPrimitiveComponent>& Proxy : OpaqueLabelProxies)
+    {
+        if (Proxy.IsValid() && Proxy->GetWorld() == World)
+        {
+            Result.Add(Proxy);
+        }
+    }
+    return Result;
+}
 /** 登记用于识别 Instance ViewFamily 的普通 Capture Target 和整数输出 Target。 */
 void RegisterCaptureTarget(
     const FRenderTarget* CaptureTarget,

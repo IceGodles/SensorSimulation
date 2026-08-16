@@ -13,30 +13,26 @@ void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
 
-    const USimulationSettings* Settings = GetDefault<USimulationSettings>();
+    // Session 启动时只读取一次 CDO；编辑器或控制台的后续修改只影响下一次 Session。
+    SettingsSnapshot = FSimulationRuntimeSettingsSnapshot::Capture(
+        *GetDefault<USimulationSettings>());
+    Scheduler.Initialize(SettingsSnapshot.SimulationMode, SettingsSnapshot.FixedStepSeconds);
+    SessionStartPlatformSeconds = FPlatformTime::Seconds();
 
-    // 确定性模式下设置固定随机种子，保证可复现性
-    if (Settings->SimulationMode == ESimulationMode::DeterministicDataset)
+    if (SettingsSnapshot.SimulationMode == ESimulationMode::DeterministicDataset)
     {
-        FMath::RandInit(Settings->RandomSeed);
-        FMath::SRandInit(Settings->RandomSeed);
+        FMath::RandInit(SettingsSnapshot.RandomSeed);
+        FMath::SRandInit(SettingsSnapshot.RandomSeed);
         UE_LOG(LogTemp, Log,
-            TEXT("Deterministic dataset mode: seed=%d, step=%.4fs"),
-            Settings->RandomSeed, Settings->FixedStepSeconds);
-    }
-
-    // 启动数据集会话
-    FString Root = Settings->DatasetRoot.Path;
-    if (Root.IsEmpty())
-    {
-        Root = FPaths::ProjectSavedDir() / TEXT("SensorSimulation");
+            TEXT("Deterministic dataset scheduler: seed=%d, step=%.4fs"),
+            SettingsSnapshot.RandomSeed, SettingsSnapshot.FixedStepSeconds);
     }
 
     DatasetSession = MakeUnique<FDatasetSession>();
-    DatasetSession->Start(Root);
+    DatasetSession->Start(SettingsSnapshot.DatasetRoot);
 
-    // 根据配置创建并启动导出服务，输出到会话目录下
-    ExportService = MakeUnique<FExportService>(Settings->MaxPendingFrames);
+    // Export 容量属于同一快照，运行中修改 Settings 不会改变当前会话背压语义。
+    ExportService = MakeUnique<FExportService>(SettingsSnapshot.MaxPendingFrames);
     ExportService->Start(DatasetSession->GetSessionDirectory());
 }
 
@@ -52,16 +48,15 @@ void USimulationSubsystem::Deinitialize()
     // 写入会话元数据
     if (DatasetSession && DatasetSession->GetState() == ESessionState::Running)
     {
-        const USimulationSettings* Settings = GetDefault<USimulationSettings>();
         const FFrameAssemblerStats& Stats = FrameAssembler.GetStats();
-        const FString Mode = Settings->SimulationMode == ESimulationMode::DeterministicDataset
+        const FString Mode = SettingsSnapshot.SimulationMode == ESimulationMode::DeterministicDataset
             ? TEXT("DeterministicDataset") : TEXT("Realtime");
 
         DatasetSession->WriteMetadata(
             Stats.TotalFrames, Stats.CompletedFrames, Stats.FailedFrames,
             Stats.TimeoutFrames, Stats.BusyFrames, Stats.RejectedFrames,
             Stats.DuplicatePayloads, Stats.LatePayloads,
-            Settings->RandomSeed, Mode);
+            SettingsSnapshot.RandomSeed, Mode);
         DatasetSession->Stop();
     }
 
@@ -72,45 +67,60 @@ void USimulationSubsystem::Deinitialize()
     Super::Deinitialize();
 }
 
-/** 推进仿真时钟、按固定步长发起采集并消费完整帧。 */
-void USimulationSubsystem::Tick(float DeltaTime)
+/** 在游戏线程安全点泵送独立调度器、超时和完整帧导出。 */
+void USimulationSubsystem::Tick(const float DeltaTime)
 {
-    const USimulationSettings* Settings = GetDefault<USimulationSettings>();
-    const double Step = FMath::Max(0.001, Settings->FixedStepSeconds);
-    AccumulatedSeconds += DeltaTime;
-    SimulationSeconds += DeltaTime;
+    const double SessionElapsedSeconds = FPlatformTime::Seconds() - SessionStartPlatformSeconds;
 
-    // 确定性模式下，等待所有待处理帧完成后再请求新帧，保证严格顺序
-    const bool bCanRequestNewFrame =
-        Settings->SimulationMode == ESimulationMode::DeterministicDataset
-            ? FrameAssembler.GetPendingFrameCount() == 0
-            : true;
+    // 确定性模式仅在 Export 有容量时 Pop；满载时完整帧继续由 FrameAssembler 持有。
+    FlushCompleteFramesToExport();
 
-    // 累加器把不稳定的游戏帧 DeltaTime 转换为固定频率采样；Fmod 保留不足一步的余量。
-    if (bCanRequestNewFrame && AccumulatedSeconds >= Step)
+    // 超时使用会话单调时钟，不依赖确定性时间轴是否因背压暂停。
+    FrameAssembler.PurgeTimedOutFrames(
+        SessionElapsedSeconds,
+        SettingsSnapshot.FrameTimeoutSeconds);
+
+    const bool bFramePipelineIdle = FrameAssembler.GetPendingFrameCount() == 0;
+    const bool bExportHasCapacity = !ExportService || ExportService->HasCapacity();
+    const TOptional<double> Timestamp = Scheduler.Poll(
+        DeltaTime,
+        bFramePipelineIdle,
+        bExportHasCapacity);
+    if (Timestamp.IsSet())
     {
-        AccumulatedSeconds = FMath::Fmod(AccumulatedSeconds, Step);
-        RequestFrame(SimulationSeconds);
-    }
-
-    // 清理超时帧，避免 Pending 队列无限增长
-    FrameAssembler.PurgeTimedOutFrames(SimulationSeconds, Settings->FrameTimeoutSeconds);
-
-    FFramePacket CompletePacket;
-    while (FrameAssembler.PopCompleteFrame(CompletePacket))
-    {
-        if (ExportService)
-        {
-            EExportBackpressurePolicy Policy = EExportBackpressurePolicy::RejectNewest;
-            if (Settings->SimulationMode == ESimulationMode::DeterministicDataset)
-            {
-                Policy = EExportBackpressurePolicy::BlockDatasetClock;
-            }
-            ExportService->Enqueue(MoveTemp(CompletePacket), Policy);
-        }
+        RequestFrame(Timestamp.GetValue(), SessionElapsedSeconds);
     }
 }
 
+/** 非阻塞移交完整帧；确定性模式队列满即返回，由 Scheduler 保持时间轴暂停。 */
+bool USimulationSubsystem::FlushCompleteFramesToExport()
+{
+    if (!ExportService)
+    {
+        return false;
+    }
+
+    const bool bDeterministic =
+        SettingsSnapshot.SimulationMode == ESimulationMode::DeterministicDataset;
+    while (!bDeterministic || ExportService->HasCapacity())
+    {
+        FFramePacket CompletePacket;
+        if (!FrameAssembler.PopCompleteFrame(CompletePacket))
+        {
+            return true;
+        }
+
+        const EExportBackpressurePolicy Policy = bDeterministic
+            ? EExportBackpressurePolicy::PauseDatasetClock
+            : EExportBackpressurePolicy::RejectNewest;
+        if (!ExportService->Enqueue(MoveTemp(CompletePacket), Policy))
+        {
+            UE_LOG(LogTemp, Error, TEXT("Failed to transfer a completed frame to Export Queue."));
+            return false;
+        }
+    }
+    return false;
+}
 /** 返回 Unreal Tick 性能统计标识。 */
 TStatId USimulationSubsystem::GetStatId() const
 {
@@ -180,7 +190,9 @@ void USimulationSubsystem::RegisterRendererMetrics(const FCameraRendererMetricsS
 }
 
 /** 创建同步帧、采集真值并向所有启用的传感器下发请求。 */
-void USimulationSubsystem::RequestFrame(double TimestampSeconds)
+void USimulationSubsystem::RequestFrame(
+    const double TimestampSeconds,
+    const double CreationTimeSeconds)
 {
     FFrameHeader Header;
     Header.SequenceId = SequenceId;
@@ -197,7 +209,7 @@ void USimulationSubsystem::RequestFrame(double TimestampSeconds)
         }
     }
 
-    FrameAssembler.BeginFrame(Header, Expected);
+    FrameAssembler.BeginFrame(Header, Expected, CreationTimeSeconds);
     FrameAssembler.AddGroundTruth(Header.FrameId, CaptureGroundTruth());
 
     for (const TWeakObjectPtr<USimSensorComponentBase>& Sensor : Sensors)

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 
 class UPrimitiveComponent;
+class UWorld;
 
 namespace UE::SensorSimulation::InstanceCapture
 {
@@ -26,4 +27,18 @@ SIMULATIONRENDERER_API void RegisterPrimitive(
  */
 SIMULATIONRENDERER_API void UnregisterPrimitive(
     const UPrimitiveComponent* Primitive);
+
+/** 游戏线程查询图元当前是否拥有有效 InstanceId，用于隔离未激活的标签代理。 */
+SIMULATIONRENDERER_API bool IsPrimitiveRegistered(
+    const UPrimitiveComponent* Primitive);
+
+/** 登记只供 Semantic/Instance 使用的不透明标签代理。 */
+SIMULATIONRENDERER_API void RegisterOpaqueLabelProxy(UPrimitiveComponent* Primitive);
+
+/** 注销不透明标签代理；可安全重复调用。 */
+SIMULATIONRENDERER_API void UnregisterOpaqueLabelProxy(UPrimitiveComponent* Primitive);
+
+/** 返回当前 World 中有效的不透明标签代理，供 Camera Rig 隔离 RGB/Depth 捕获。 */
+SIMULATIONRENDERER_API TArray<TWeakObjectPtr<UPrimitiveComponent>> GetOpaqueLabelProxies(
+    const UWorld* World);
 }

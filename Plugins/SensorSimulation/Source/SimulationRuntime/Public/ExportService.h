@@ -10,8 +10,10 @@ enum class EExportBackpressurePolicy : uint8
     RejectNewest,
     /** 队列满时丢弃最旧的帧，为新帧腾出空间。 */
     DropOldest,
-    /** 确定性模式：阻塞调用线程直到队列有空位。 */
-    BlockDatasetClock
+    /** 确定性模式：队列满时立即返回 false，由调度器显式暂停时间轴。 */
+    PauseDatasetClock,
+    /** 旧名称兼容别名；行为已改为非阻塞显式暂停。 */
+    BlockDatasetClock = PauseDatasetClock
 };
 
 /** 接收完整帧并异步导出数据集的有界队列服务。 */
@@ -31,6 +33,8 @@ public:
     bool Enqueue(FFramePacket&& Packet, EExportBackpressurePolicy Policy);
 /** 返回当前仍在队列中等待处理的帧数量。 */
     int32 GetPendingCount() const;
+/** 返回队列是否还能立即接收一个完整帧，不进行等待。 */
+    bool HasCapacity() const;
 /** 返回 Worker 已成功写出的帧数量。 */
     int64 GetExportedFrameCount() const;
 /** 返回 Worker 写入失败的帧数量。 */

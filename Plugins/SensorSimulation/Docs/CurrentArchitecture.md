@@ -2,7 +2,7 @@
 
 > 本文描述当前代码实际存在的架构，不把路线规划中的功能写成已完成。
 > 各部分统一采用：**为什么要这样做 → 当前如何做 → 相较旧架构修改了什么及原因 → 下一步做什么/如何优化**。
-> 当前状态基于 2026-08-07 的项目源码、编译结果与自动化验收结果。
+> 当前状态基于 2026-08-15 的项目源码、编译结果与自动化验收结果。
 
 ## 0. 当前状态摘要
 
@@ -18,12 +18,17 @@
 - 完整帧 → 有界 Export Queue → 后台 Worker → 数据集文件。
 - Dataset Session、逐通道相机标定、会话元数据和 Renderer 按通道指标快照。
 - Camera Rig/Readback 与 Export Worker 生命周期自动化测试。
-- 真正的 32 位 Instance 网格绘制通道、原生 `PF_R32_UINT` 目标与读回、协议校验和文件写出。
+- 真正的 32 位 Instance 网格绘制通道、原生 PF_R32_UINT 目标与读回、协议校验和文件写出。
+- R15 特殊对象闭环：HISM 逐内部实例、Masked 孔洞、SkeletalMesh、Translucent 的 Ignore/OpaqueProxy 双策略和 D3D12 Nanite 专用路径。
+- Renderer 输出矩阵阶段 2：D3D11/D3D12 × 四模态 × 640×480/1280×720，覆盖 Actor 运动、相机前移/复位、遮挡、无残影、OpaqueProxy/Ignore 和 Readback 指标。
+- Renderer 输出矩阵阶段 3：前、后、左、右四 Rig 同一 FrameId 并发，覆盖相机与 Actor 联合连续运动、四模态全图对齐、Busy、ChannelGuid 路由和全局 Pump。
+- Renderer 输出矩阵阶段 4：四 Rig 中 Rear 在四模态 Readback 仍 Pending 时销毁，其他三台继续交付；Rear 按原 SensorGuid/ChannelGuid 重建后重新加入全局 Pump。
+- Renderer 输出矩阵阶段 5：Rear 带四个 Pending Readback 禁用 Semantic，继续提交三模态帧，排空后按原 ChannelGuid 恢复；未受影响通道保持资源复用。
 
 当前仍未闭环：
 
-- 独立 HISM、Masked foliage、SkeletalMesh、半透明遮挡等特殊对象的完整跨 RHI 验收矩阵（Nanite 与 ISM/HISM 内部实例已闭环）。
-- 完整的 D3D11/D3D12 × RGB/Semantic/Depth × 多分辨率自动化矩阵。
+- D3D11/D3D12 × RGB/Semantic/Depth/Instance 的标准/高清、Actor 运动、相机前移/复位、遮挡和代理策略矩阵已完成；阶段 3 又完成四方向 Rig 并发和相机组/Actor 联合平移，独立相机旋转与抖动尚未纳入。
+- 四方向并发、单 Rig Pending 销毁/重建及通道级禁用/恢复已完成；多 Rig 同时退出、Pending 关卡切换、模块卸载和 RHI 设备重建压力测试仍未完成。
 
 ---
 
@@ -347,16 +352,97 @@ Instance 不再被拒绝，也不再使用 RGBA8 或 CustomStencil 表示。显�
 
 `RegisterPrimitive → 特殊对象分类 → 支持项进入 Registry／不支持项显式排除 → 可见 MeshBatch → 默认 Opaque 材质／源 Masked 材质 → Pass 独立深度 + PF_R32_UINT`
 
-#### 下一步可以怎么优化
-
-R15 阶段 B 当前为**部分完成（2026-08-07，ISM/HISM 与 Nanite 已闭环）**：
+#### R15 阶段 B（已完成，2026-08-11）
 
 - [x] 已为 Actor 与 ISM/HISM 内部实例预留连续 ID 区间，Payload 合法值校验覆盖整个区间。
 - [x] 官方 UE 5.7.2 Renderer 在后处理调用栈内借出 `FInstanceCullingManager`；Instance Pass 使用 `AddSimpleMeshPass` 复用正式 GPU Scene Primitive-ID 流。
 - [x] Shader 同时处理 `USE_INSTANCING` 与 `USE_INSTANCE_CULLING`，两个 ISM 内部实例的不同 32 位 ID 已升级为强制断言，并在 D3D11/D3D12 通过。
-- [x] 半透明产品策略固定为“忽略透明表面，让其后的最近受支持不透明表面写标签”；需要标注玻璃本体时使用不透明代理几何体。
+- [x] 半透明产品策略已明确拆为 `Ignore` 与 `OpaqueProxy`：前者让玻璃后的对象写标签，后者由同 Actor 的不透明代理写玻璃自身标签。
 - [x] Nanite 路径利用扩展上下文中的 `NaniteRasterResults`，在 VisBuffer 存活阶段解码 `PrimitiveId/RelativeId` 并输出稳定 InstanceId；D3D12 自包含真实像素断言通过。
-- [ ] 独立 HISM、Masked foliage、SkeletalMesh 与半透明遮挡的完整跨 RHI 特殊对象矩阵仍需补齐。
+- [x] 独立 HISM、Masked foliage、SkeletalMesh 与半透明双策略已纳入同一自动化用例，并在 D3D11/D3D12 获得一致的真实 GPU 像素结果。
+
+##### 半透明双策略的数据流（已完成，2026-08-12）
+
+为什么要做：感知训练需要透过汽车玻璃看到内饰、驾驶员和机器人内部结构，而玻璃检测、维修检测、破损识别或材质识别又需要玻璃自身拥有稳定标签。单一规则无法同时满足两种数据产品。
+
+当前如何做：
+
+```mermaid
+flowchart LR
+    Object["SemanticObjectComponent"] --> Policy{"TranslucentLabelPolicy"}
+    Policy -->|"Ignore"| Skip["透明图元不写 Semantic/Instance 深度"]
+    Skip --> Behind["后方最近的不透明对象写标签"]
+    Policy -->|"OpaqueProxy"| Proxy["验证同 Actor 的不透明代理"]
+    Proxy --> Registry["代理注册表"]
+    Registry --> Labels["Semantic/Instance 保留代理"]
+    Registry --> Visual["RGB/Depth 隐藏代理"]
+```
+
+- `Ignore` 是默认值；真实半透明图元不写 CustomStencil，也不进入 Instance Registry，因此不会挡住后方标签。
+- `OpaqueProxy` 要求 `OpaqueLabelProxy` 是同一 Actor 上已注册且材质非 Translucent 的 `UPrimitiveComponent`，代理继承该组件的 SemanticId/InstanceId。
+- 代理设置为仅 SceneCapture 可见并进入 Renderer 注册表；Camera Rig 每次提交前刷新，RGB/Depth 隐藏代理，Semantic/Instance 保留代理，支持运行时新增和策略热更新。
+- 从 `OpaqueProxy` 切回 `Ignore` 时会注销旧代理并恢复接管前状态；已配置但未启用的代理不会误写标签。
+
+如何配置：感知训练对象选择 `Ignore`，无需设置代理；玻璃产品选择 `OpaqueProxy`，并把一个贴合玻璃外形的不透明代理组件赋给 `OpaqueLabelProxy`。代理几何越贴合玻璃，边界真值越准确。
+
+编辑器产品化校验（已完成，2026-08-14）：
+
+- [x] `IsDataValid` 将缺失代理、跨 Actor 代理和 Translucent 代理判为 Invalid，避免错误配置进入数据生产。
+- [x] 未注册代理、同 Actor 缺少半透明源，以及代理与透明源包围盒偏差超过 `OpaqueProxyBoundsTolerance` 时给出警告。
+- [x] 包围盒容差默认 0.2，可按汽车玻璃或机器人防护罩的代理近似程度逐对象调整。
+- [x] `SensorSimulation.Rendering.OpaqueProxy.DataValidation` 已覆盖有效、缺失、跨 Actor、透明材质、错位和未注册六种情况。
+
+运行时热切换与四模态隔离（已完成，2026-08-14）：
+
+- [x] 代理的“视觉隔离生命周期”与“是否写标签”已解耦；切换到 `Ignore` 后，已配置代理仍保持主视口隐藏并继续被 RGB/Depth 排除。
+- [x] 新增 `ApplyCaptureConfiguration()`，蓝图或 C++ 修改 SemanticId、策略或代理后可立即应用；Details 面板继续复用 `PostEditChangeProperty` 自动刷新。
+- [x] `SensorSimulation.Rendering.OpaqueProxy.HotSwitchIsolation` 连续捕获 `OpaqueProxy` 帧和 `Ignore` 帧：Semantic/Instance 分别从代理标签切换到后景标签，RGB 不出现红色代理，Depth 始终读取后景距离。
+- [x] D3D11 与 D3D12 使用同一四模态像素用例并全部通过。
+
+下一步优化：评估代理三角面数预算和自动生成低精度代理工具。
+
+##### UE Renderer 补丁化与兼容守卫（已完成，2026-08-14）
+
+为什么要做：R15 依赖官方 UE 5.7.2 未公开的 Renderer 栈内对象。若只在某台机器手工修改引擎，换电脑、重装引擎或升级小版本后，插件可能无法编译，或者在错误生命周期读取 Renderer 数据。
+
+当前如何做：
+
+- [x] `Tools/EnginePatches/UE5.7.2/SensorSimulationRendererContext.patch` 保存相对官方 `5.7.2-release` 的两个文件最小补丁。
+- [x] `manifest.json` 固定引擎版本、Compatible Changelist、修改文件、导出 API 和生命周期契约。
+- [x] `check_renderer_patch.ps1` 检查 `Build.version` 与六个必需特征，并可输出 JSON 验收报告。
+- [x] `RendererCompatibility.h` 将私有 Renderer API 集中到一个入口；非 UE 5.7.2 会在编译期报错，字段或函数签名漂移也会在该兼容层局部失败。
+- [x] 补丁通过 `git apply --reverse --check`，证明当前引擎能够精确反向还原到官方基线。
+
+```mermaid
+flowchart LR
+    Official["官方 UE 5.7.2"] --> Patch["应用最小 Renderer 补丁"]
+    Patch --> Check["版本与特征检查"]
+    Check --> Compat["RendererCompatibility 编译守卫"]
+    Compat --> Instance["Instance/HISM/Nanite 捕获"]
+```
+
+##### Renderer 构建前置门禁与手动 CI（已完成，2026-08-14）
+
+为什么要做：Renderer 源码编译耗时较长。如果引擎版本或补丁缺失，应该在调用 UBT 前失败，并给本地构建机与 CI 返回同一种机器可读结果。由于 UE 官方源码需要授权，CI 还必须限定到隔离的自托管 Runner，不能让未审查 PR 自动执行构建机上的代码。
+
+当前如何做：
+
+```mermaid
+flowchart LR
+    Entry["本地或手动 CI"] --> Gate["build_with_renderer_preflight.ps1"]
+    Gate --> Check["版本与补丁检查"]
+    Check -->|"失败"| Fail["退出非零 + FailureStage"]
+    Check -->|"通过"| Build["UE Build.bat"]
+    Build --> Report["RendererPreflightSummary.json"]
+```
+
+- [x] `build_with_renderer_preflight.ps1` 是统一入口，支持 `UE_ENGINE_ROOT`、显式参数和 `-SkipBuild` 检查模式。
+- [x] 补丁检查不通过时不会调用 `Build.bat`；汇总报告记录 `PreflightPassed`、`BuildRequested`、`BuildExitCode` 与 `FailureStage`。
+- [x] `.github/workflows/renderer-preflight.yml` 只允许手动触发，并要求带 `ue-5.7.2` 标签的 Windows x64 自托管 Runner。
+- [x] Checkout 禁止持久化凭据；官方 Actions 固定到 v7.0.1 提交，报告无论成功失败都会作为 Artifact 上传。
+- [x] 成功路径得到 `Passed=true`、`BuildExitCode=0`；不存在引擎路径的故障注入以退出码 1 停在 `RendererPatchCheck`。
+
+下一步优化：配置隔离的自托管 Runner 并首次手动运行工作流；完成安全评审前不开放 PR 自动触发。手动 CI 稳定后，再把 D3D11/D3D12 像素矩阵接到构建成功之后。
 
 详细证据和后续接入方案见 ImplementationRoadmap.md 的“R15 阶段 B 实施审计”。
 
@@ -369,6 +455,21 @@ D3D11 和 D3D12 已分别通过真实 PIE/GPU 大 ID 生命周期测试、带 Ro
 - `Saved/Acceptance/R15_SpecialObjects/UE572_OfficialRenderer/D3D12_ISM_RequiredAssertion.log`
 - `Saved/Acceptance/R15_SpecialObjects/UE572_OfficialRenderer/D3D11_ISM_RequiredAssertion.log`
 - `Saved/Logs/R15_NanitePixelDiscardFix_DX12.log`
+- `Saved/Acceptance/R15_SpecialObjects/UE572_CrossRHI_Matrix/D3D12.log`
+- `Saved/Acceptance/R15_SpecialObjects/UE572_CrossRHI_Matrix/D3D11.log`
+- `Saved/Acceptance/R15_SpecialObjects/UE572_TranslucentPolicies/D3D12.log`
+- `Saved/Acceptance/R15_SpecialObjects/UE572_TranslucentPolicies/D3D11.log`
+
+最终跨 RHI 特殊对象矩阵：
+
+| 验收项 | D3D11 | D3D12 | 判定依据 |
+|---|---|---|---|
+| 独立 HISM 逐内部实例 | 通过 | 通过 | 两个内部 ID `16912385`、`16912386` 同时存在 |
+| Masked foliage 风格裁剪 | 通过 | 通过 | 前景 `16916481:280`，孔洞后景 `16920576:216` |
+| SkeletalMesh 动态路径 | 通过 | 通过 | ID `16924672:8` |
+| Translucent Ignore | 通过 | 通过 | 透明前景 ID `16928768` 不存在，后景 `16932864:236` |
+| Translucent OpaqueProxy | 通过 | 通过 | 代理 `16936960:220`，被遮挡后景 ID `16941056` 不存在 |
+| Nanite 专用路径 | 不适用 | 通过 | D3D12 VisBuffer 用例中 Nanite ID `16909312:20` |
 
 #### 下一步做什么/如何优化
 
@@ -435,7 +536,7 @@ flowchart TD
 - R15：覆盖 Nanite、Masked、半透明、植被、ISM/HISM、SkeletalMesh 和多 Primitive Actor。
 - 把 Runtime 全图合法性扫描移到 SIMD、TaskGraph 或 GPU Reduction。
 - 日志记录第一个非法像素坐标、RGBA 和合法 ID 集合。
-- 明确半透明对象是否写 Semantic、写前景标签还是保持背景的产品策略。
+- [x] 半透明产品策略已明确为可逐对象选择的 `Ignore` / `OpaqueProxy`，并完成 D3D11/D3D12 像素回归。
 
 ### 4.3 异步 GPU Readback
 
@@ -543,25 +644,33 @@ Readback 对象池：
 - `MaxPendingFrames`：Export Queue 容量。
 - `DatasetRoot`：数据集根目录。
 
-Subsystem 使用累加器把不稳定的游戏帧 DeltaTime 转为固定采样间隔。
+`FSimulationScheduler` 独立保存采样时间轴和暂停原因；Subsystem Tick 只在游戏线程安全点泵送决策与执行 UObject 捕获。
 
-- Realtime：允许持续请求新帧。
-- DeterministicDataset：只有 FrameAssembler 没有 Pending Frame 时才请求下一帧。
-- 确定性模式初始化 `Rand` 与 `SRand` 种子。
+- Realtime：继续把 DeltaTime 累积为固定采样间隔，每个游戏 Tick 最多发起一帧。
+- DeterministicDataset：完全忽略 DeltaTime；只有 FrameAssembler 流水线为空且 Export 有容量时才推进一个 `FixedStepSeconds`。
+- Export 满时暂停原因显式为 `ExportBackpressure`；上一帧未完成时为 `FramePipelineBusy`，两者都不改变确定性时间戳。
+- 确定性模式初始化 `Rand` 与 `SRand` 种子；帧超时另用会话单调时钟，不会随确定性时间轴暂停。
+- Session 启动时把 Settings CDO 复制到 `FSimulationRuntimeSettingsSnapshot`，当前会话不再重复读取 CDO。
+- 空 `DatasetRoot` 固定解析为 `Project/Saved/SensorSimulation`；相对路径固定锚定 `Project/Saved`，逃逸路径被拒绝；绝对路径原样规范化。
 
 #### 相较旧架构修改了什么及原因
 
 - **固定步长、随机种子、帧超时和导出容量已经进入项目设置。**
   原因是这些参数会直接改变数据集可复现性和背压行为，不应散落为硬编码。
-- **确定性模式会等待当前帧聚合完成。**
-  原因是允许多帧重叠会让 GPU/LiDAR 完成顺序影响数据集帧序列。
+- **确定性模式由独立调度状态机推进固定时间戳。**
+  原因是游戏帧 DeltaTime、渲染卡顿和 Export IO 不应改变数据集采样序列。
+- **背压从阻塞调用线程改为显式暂停。**
+  原因是完整帧可留在 FrameAssembler 等待 Export 空位，无需在游戏线程 Sleep，也不会丢失或误超时。
+- **设置与输出目录在 Session 启动时固化。**
+  原因是同一数据集会话必须始终使用同一模式、步长、容量、超时、Seed 和绝对根目录。
 
 #### 下一步做什么/如何优化
 
-- 当前确定性时钟仍由游戏 Tick 驱动，不是完全独立的仿真调度器。
-- `BlockDatasetClock` 会在 Export Queue 满时阻塞调用线程；后续应让时钟显式暂停，而不是用 Sleep 轮询。
-- 相对 `DatasetRoot` 当前可能受进程工作目录影响；应统一解析为 Project/Saved 或要求绝对路径。
-- 为设置变更增加运行时快照，避免采集中途修改 CDO 造成同一 Session 语义变化。
+- [x] 确定性时间轴已由 `FSimulationScheduler` 独立管理，游戏 Tick 不再用 DeltaTime 推进确定性采样。
+- [x] `PauseDatasetClock` 已取代阻塞等待；Export 满时调度器显式暂停，Worker 使用事件唤醒且无 Sleep 轮询。
+- [x] 相对 `DatasetRoot` 已统一解析到 Project/Saved，并拒绝 `..` 逃逸；绝对路径继续支持。
+- [x] `FSimulationRuntimeSettingsSnapshot` 已固化当前 Session 设置，采集中修改 CDO 只影响下一次 Session。
+- 下一步增加命令行覆盖快照、暂停时长/原因指标，以及不同游戏帧率下端到端数据集哈希复现测试。
 
 ### 5.2 传感器基类与 Camera Adapter
 
@@ -715,7 +824,7 @@ PNG 编码和磁盘 IO 的耗时与 GPU 采集不同步，不能占用游戏线�
 flowchart LR
     Packet["完整 FFramePacket"]
     Queue["有界 MPSC Queue"]
-    Policy["RejectNewest / DropOldest / BlockDatasetClock"]
+    Policy["RejectNewest / DropOldest / PauseDatasetClock"]
     Worker["FRunnable Worker"]
     FrameDir["frame_XXXXXX"]
     Session["metadata.json<br/>calibration.json"]
@@ -727,7 +836,7 @@ flowchart LR
 Export Worker：
 
 - `Start` 创建输出目录并启动低优先级线程。
-- `Run` 消费完整帧，队列为空时短暂休眠。
+- `Run` 消费完整帧，队列为空时等待 `FEvent`；Enqueue 和 Stop 负责唤醒，不再轮询 Sleep。
 - `Stop` 等待 Worker 结束；退出前排空队列。
 - 统计成功和失败写出帧数。
 
@@ -748,7 +857,7 @@ Export Worker：
 
 - Realtime 默认 `RejectNewest`。
 - `DropOldest` 已有实现但当前 Subsystem 不选择它。
-- DeterministicDataset 使用 `BlockDatasetClock`。
+- DeterministicDataset 使用非阻塞 `PauseDatasetClock`；队列满时完整帧留在 FrameAssembler，调度器保持时间戳不动。
 
 #### 相较旧架构修改了什么及原因
 
@@ -766,7 +875,8 @@ Export Worker：
 - 为 Depth/Instance 文件增加格式版本、字节序和无效值说明。
 - LiDAR 当前导出不包含 Point 中已有的 SemanticId、InstanceId 和 RelativeTime，需要定义扩展格式或伴随文件。
 - 把 Export 指标写入 metadata，并记录 Reject/Drop 的 FrameId。
-- 避免 `BlockDatasetClock` 在游戏线程中忙等待。
+- [x] 已移除 `BlockDatasetClock` 的游戏线程忙等待；兼容别名保留，但行为已转为非阻塞暂停。
+- 下一步把暂停次数、累计暂停时长和 Export 高水位写入 metadata。
 
 ---
 
@@ -900,17 +1010,28 @@ classDiagram
 
 ### 当前验证边界
 
-- D3D12 Semantic 由启动脚本和外部像素分析自动完成，但尚未全部注册为 UE Automation Framework 的 GPU 测试。
-- D3D11/D3D12 矩阵目前重点覆盖 Semantic；RGB/Depth 尚未形成同等完整的组合矩阵。
-- Instance 生命周期已经在 D3D11 和 D3D12 上实现自动化；多相机销毁、模块卸载和 RHI 重置压力测试仍未完成。
-- 特殊渲染对象仍缺自动化。
+- [x] `SensorSimulation.Rendering.OutputMatrix.AllModalities` 已在一次真实 GPU 捕获中覆盖 RGB/Semantic/Depth/Instance，以及 32×24 偶数和 17×11 奇数 ViewRect。
+- [x] D3D11 与 D3D12 使用同一测试入口；格式、颜色空间、单位、ViewRect、RowStride、字节数、合法标签、米制深度和完整 uint32 InstanceId 均通过。
+- [x] `Tools/run_renderer_output_matrix.ps1` 已把双 RHI 小尺寸基线收口为单入口，并生成 `RendererOutputMatrixSummary.json`。
+- [x] `Tools/run_renderer_output_matrix_phase2.ps1` 已覆盖 640×480/1280×720、7 个连续 SceneCase（含相机前移与复位）、背压/时延/复用指标，并生成 `RendererOutputMatrixPhase2Summary.json`。
+- [x] `SensorSimulation.Rendering.OutputMatrix.Phase3.FourRigConcurrentContinuousMotion` 已在 D3D11/D3D12 覆盖四方向 Rig、6 步联合连续运动、16 通道路由、全局 Pump 和逐 Rig Busy。
+- [x] Instance Pass 通过每个 View 的 Uniform Buffer 取得投影矩阵，避免多分辨率 D3D12 SceneCapture 串用逐 Draw 参数。
+- [x] OpaqueProxy 激活时输出代理标签；Ignore 时 Instance View 隐藏未激活代理并恢复后景标签，RGB/Depth 始终不包含标签代理。
+- [x] 独立 HISM、Masked、SkeletalMesh、Translucent Ignore/OpaqueProxy 与 D3D12 Nanite 已有特殊对象自动化。
+- [x] `SensorSimulation.Rendering.OutputMatrix.Phase4.PendingRigDestroyRebuild` 已在 D3D11/D3D12 验证单 Rig 带 4 个 Pending Readback 销毁、其余三台继续交付、同 GUID 重建和全局 Manager 注册数恢复。
+- [x] `SensorSimulation.Rendering.OutputMatrix.Phase5.ChannelDisableRestore` 已在 D3D11/D3D12 验证 Pending 期间禁用 Semantic、旧 Target 安全退休、三模态继续提交及同 ChannelGuid 恢复。
+- Instance 生命周期、四方向并发、单 Rig Pending 销毁/重建和通道热开关已经自动化；模块卸载、RHI 重置、Pending 关卡切换和多 Rig 同时退出仍未完成。
 
 ### 下一步做什么/如何优化
 
-1. 把外部验收脚本收口为单入口测试命令和机器可读汇总报告。
-2. 建立 `RHI × Resolution × Modality × SceneCase` 参数矩阵。
-3. 扩充跨 RHI 生命周期压力场景，并增加遮挡、运动和特殊对象用例。
-4. 把 Readback/Export/FrameAssembler 指标写入每次验收报告。
+1. [x] 已把四模态双 RHI 小尺寸基线收口为单入口测试命令和机器可读 JSON 汇总报告。
+2. [x] `RHI × Resolution × Modality × SceneCase` 已覆盖 640×480、1280×720、Actor 运动、相机前移/复位、遮挡、OpaqueProxy 和 Ignore。
+3. [x] 阶段 2 报告已记录 Readback Accepted/Busy/Rejected、GPU/交付时延、Pending 峰值和资源复用。
+4. [x] 阶段 3 已覆盖相机组与 Actor 同时连续平移、四方向多 Rig 并发、Busy、GUID 路由和全局 Pump。
+5. [x] 阶段 4 已覆盖单个 Rig 带 Pending Readback 销毁、其他 Rig 不受阻塞、同身份重建及重新加入全局 Pump。
+6. [x] 阶段 5 已覆盖 Pending 期间单通道禁用、旧 Target 退休保活、其余通道继续提交和原 ChannelGuid 恢复。
+7. [下一步] 扩充相机旋转/独立抖动、多 Rig 同时退出、Pending 关卡切换、模块卸载和 RHI 重置压力场景。
+8. [下一步] 将 Export/FrameAssembler 端到端吞吐和超时指标并入 Renderer 输出矩阵报告。
 
 ---
 
@@ -940,28 +1061,6 @@ classDiagram
 - R1：D3D12 Semantic 脚本化自动验收，尚未完全纳入 UE Automation Framework。
 - R2：D3D11/D3D12 Semantic 矩阵，尚未覆盖所有模态。
 
-### 尚未完成
-
-- R15 Phase B：ISM/HISM 逐内部实例 ID、Nanite 专用路径与 Translucent 产品规则已完成；独立 HISM、Masked foliage、SkeletalMesh、透明遮挡等完整自动化矩阵仍待收口。
-
-### 推荐实施顺序
-
-```mermaid
-flowchart LR
-    A["1. R15 阶段 B 收口<br/>特殊对象跨 RHI 矩阵"]
-    B["2. R1/R2<br/>完整 GPU 验收矩阵"]
-    C["3. 发布加固<br/>压力测试与报告"]
-
-    A --> B --> C
-```
-
-顺序原因：
-
-1. R13-R14 已完成整数模态基础，R15 阶段 A 已支持 Masked 并建立显式回退规则，因此阶段 B 是当前第一优先级。
-2. 使用特殊对象矩阵同时约束 Semantic 与 Instance 的行为。
-3. 最后把 RHI、分辨率、模态和特殊对象组合固化成持续回归矩阵。
-
----
 
 ## 10. 最小运行时装配
 

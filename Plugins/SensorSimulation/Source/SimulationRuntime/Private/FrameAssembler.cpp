@@ -3,12 +3,13 @@
 namespace { enum class EFrameTerminalState : uint8 { Completed, Failed, TimedOut }; }
 
 /** 创建或更新指定编号的待聚合帧，并记录整帧预期模态。 */
-void FFrameAssembler::BeginFrame(const FFrameHeader& Header, EPayloadType ExpectedPayloads)
+void FFrameAssembler::BeginFrame(const FFrameHeader& Header, const EPayloadType ExpectedPayloads,
+    const TOptional<double> CreationTimeSeconds)
 {
     FFramePacket& Packet = PendingFrames.FindOrAdd(Header.FrameId);
     Packet.Header = Header;
     Packet.ExpectedPayloads = ExpectedPayloads;
-    FrameCreationTime.FindOrAdd(Header.FrameId) = Header.SimulationTimestampSeconds;
+    FrameCreationTime.FindOrAdd(Header.FrameId) = CreationTimeSeconds.Get(Header.SimulationTimestampSeconds);
     ++Stats.TotalFrames;
 }
 
@@ -174,6 +175,11 @@ int32 FFrameAssembler::PurgeTimedOutFrames(double CurrentTimeSeconds, double Tim
     for (const auto& Pair : PendingFrames)
     {
         const uint64 FrameId = Pair.Key;
+        // 已完成帧可能因 Export 背压暂留；它不再等待传感器，不能按采集超时删除。
+        if (EnqueuedCompleteFrames.Contains(FrameId))
+        {
+            continue;
+        }
         const double* CreationTime = FrameCreationTime.Find(FrameId);
         if (CreationTime && (CurrentTimeSeconds - *CreationTime) > TimeoutSeconds)
         {

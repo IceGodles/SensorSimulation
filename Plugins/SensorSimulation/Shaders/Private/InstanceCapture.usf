@@ -20,7 +20,6 @@ struct FInstanceCaptureVSToPS
 };
 
 #if VERTEXSHADER
-float4x4 InstanceTranslatedWorldToClip;
 void MainVS(
     FVertexFactoryInput Input,
     out FInstanceCaptureVSToPS Output
@@ -57,8 +56,8 @@ void MainVS(
     const float4 RasterizedWorldPosition =
         VertexFactoryGetRasterizedWorldPosition(Input, VFIntermediates, WorldPosition);
     
-    // 使用 Instance 相机矩阵 InstanceTranslatedWorldToClip 投影顶点
-    Output.Position = INVARIANT(mul(RasterizedWorldPosition, InstanceTranslatedWorldToClip));
+    // 使用 Pass 显式绑定的当前 View Uniform，避免多分辨率 SceneCapture 串用投影矩阵。
+    Output.Position = INVARIANT(mul(RasterizedWorldPosition, ResolvedView.TranslatedWorldToClip));
 
 #if !MATERIALBLENDING_SOLID
     Output.FactoryInterpolants =

@@ -5,6 +5,8 @@
 #include "SemanticRegistry.h"
 #include "ExportService.h"
 #include "DatasetSession.h"
+#include "SimulationScheduler.h"
+#include "SimulationSettings.h"
 #include "SimulationSubsystem.generated.h"
 
 class USemanticObjectComponent;
@@ -63,13 +65,17 @@ private:
     uint64 SequenceId = 1;
     /** 下一次发起采集时使用的帧编号。 */
     uint64 NextFrameId = 1;
-    /** 尚未消耗为固定采样步长的游戏时间余量。 */
-    double AccumulatedSeconds = 0.0;
-    /** 子系统启动以来累计的仿真时间。 */
-    double SimulationSeconds = 0.0;
+    /** 当前 Session 启动时捕获的不可变设置，运行中不再读取 Settings CDO。 */
+    FSimulationRuntimeSettingsSnapshot SettingsSnapshot;
+    /** 独立决定固定时间戳、流水线等待和 Export 背压暂停的调度状态机。 */
+    FSimulationScheduler Scheduler;
+    /** 会话单调时钟起点，仅用于真实等待超时，不参与确定性采样时间戳。 */
+    double SessionStartPlatformSeconds = 0.0;
 
 /** 创建同步帧、采集真值并向所有启用的传感器下发请求。 */
-    void RequestFrame(double TimestampSeconds);
+    void RequestFrame(double TimestampSeconds, double CreationTimeSeconds);
+    /** 将完整帧非阻塞移交 Export；确定性模式队列满时保留在 FrameAssembler。 */
+    bool FlushCompleteFramesToExport();
 /** 遍历带语义组件的 Actor 并采集位姿、包围盒和速度真值。 */
     TArray<FObjectGroundTruth> CaptureGroundTruth() const;
     /** 验证图像尺寸、紧密 RGBA8 布局以及 Semantic 标签集合与通道约束。 */

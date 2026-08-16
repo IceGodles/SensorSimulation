@@ -8,6 +8,7 @@
 #include "CameraRigComponent.generated.h"
 
 class FInstanceCaptureTarget;
+class UPrimitiveComponent;
 class USceneCaptureComponent2D;
 class UTextureRenderTarget2D;
 
@@ -149,6 +150,8 @@ private:
         TObjectPtr<UTextureRenderTarget2D> CaptureTarget = nullptr;
         /** Instance 正式输出；原生 PF_R32_UINT，不受 UTextureRenderTarget2D 格式白名单限制。 */
         TSharedPtr<FInstanceCaptureTarget, ESPMode::ThreadSafe> InstanceTarget;
+        /** 上一次为 RGB/Depth 临时隐藏的标签代理，用于下次提交前精确刷新。 */
+        TArray<TWeakObjectPtr<UPrimitiveComponent>> HiddenLabelProxies;
     };
 
     /** 根据有效配置动态创建的全部运行时捕获通道。 */
@@ -197,6 +200,8 @@ private:
     void CreateChannel(FChannelRuntime& Channel, const FCameraChannelConfig& Config);
     /** 判断当前运行时状态是否已经与可编辑配置完全一致。 */
     bool IsConfigurationCurrent() const;
+    /** 刷新当前通道对标签代理的可见性：RGB/Depth 隐藏，Semantic/Instance 保留。 */
+    void RefreshOpaqueLabelProxyVisibility(FChannelRuntime& Channel);
     /** 根据 RGB、标签或深度模态配置场景捕获参数。 */
     void ConfigureCapture(FChannelRuntime& Channel);
     /** 仅供按模态触发的人工调试入口选择第一条通道；正式资源查询始终使用 ChannelGuid。 */

@@ -4,8 +4,12 @@
 #include "SimulationSubsystem.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Materials/MaterialInterface.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
 
 /** 构造并初始化 USemanticObjectComponent 的默认状态。 */
 USemanticObjectComponent::USemanticObjectComponent()
@@ -58,6 +62,188 @@ void USemanticObjectComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
     Super::EndPlay(EndPlayReason);
 }
 
+/** 返回 OpaqueProxy 是否属于同一 Actor、已注册且自身不是透明材质。 */
+bool USemanticObjectComponent::HasValidOpaqueLabelProxy() const
+{
+    if (TranslucentLabelPolicy != ETranslucentLabelPolicy::OpaqueProxy ||
+        !OpaqueLabelProxy || OpaqueLabelProxy->GetOwner() != GetOwner() ||
+        !OpaqueLabelProxy->IsRegistered())
+    {
+        return false;
+    }
+    for (int32 MaterialIndex = 0; MaterialIndex < OpaqueLabelProxy->GetNumMaterials(); ++MaterialIndex)
+    {
+        const UMaterialInterface* Material = OpaqueLabelProxy->GetMaterial(MaterialIndex);
+        if (Material && IsTranslucentBlendMode(Material->GetBlendMode()))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+#if WITH_EDITOR
+/**
+ * 把 OpaqueProxy 的产品约束接入 UE Data Validation。
+ *
+ * 缺失代理、跨 Actor 和透明代理会直接产生 Invalid；未注册、找不到透明源或
+ * 包围盒偏差过大属于资产制作警告，避免近似代理因保守阈值阻塞整个数据集构建。
+ */
+EDataValidationResult USemanticObjectComponent::IsDataValid(FDataValidationContext& Context) const
+{
+    EDataValidationResult Result = EDataValidationResult::Valid;
+    if (TranslucentLabelPolicy != ETranslucentLabelPolicy::OpaqueProxy)
+    {
+        return CombineDataValidationResults(Result, Super::IsDataValid(Context));
+    }
+
+    if (!OpaqueLabelProxy)
+    {
+        Context.AddError(FText::FromString(TEXT("OpaqueProxy 策略必须指定 OpaqueLabelProxy。")));
+        Result = EDataValidationResult::Invalid;
+        return CombineDataValidationResults(Result, Super::IsDataValid(Context));
+    }
+    if (OpaqueLabelProxy->GetOwner() != GetOwner())
+    {
+        Context.AddError(FText::FromString(TEXT("OpaqueLabelProxy 必须与 SemanticObjectComponent 属于同一 Actor。")));
+        Result = EDataValidationResult::Invalid;
+    }
+
+    bool bProxyUsesTranslucentMaterial = false;
+    for (int32 MaterialIndex = 0; MaterialIndex < OpaqueLabelProxy->GetNumMaterials(); ++MaterialIndex)
+    {
+        const UMaterialInterface* Material = OpaqueLabelProxy->GetMaterial(MaterialIndex);
+        bProxyUsesTranslucentMaterial |= Material && IsTranslucentBlendMode(Material->GetBlendMode());
+    }
+    if (bProxyUsesTranslucentMaterial)
+    {
+        Context.AddError(FText::FromString(TEXT("OpaqueLabelProxy 不能使用 Translucent 材质。")));
+        Result = EDataValidationResult::Invalid;
+    }
+    if (!OpaqueLabelProxy->IsRegistered() && !OpaqueLabelProxy->IsTemplate())
+    {
+        Context.AddWarning(FText::FromString(TEXT("OpaqueLabelProxy 当前未注册，运行时不会参与标签捕获。")));
+    }
+
+    // 汇总同 Actor 上真实半透明图元的世界包围盒，用于发现明显错位或尺寸错误的代理。
+    FBox TranslucentBounds(ForceInit);
+    if (const AActor* Owner = GetOwner())
+    {
+        TInlineComponentArray<UPrimitiveComponent*> Primitives(Owner);
+        for (const UPrimitiveComponent* Primitive : Primitives)
+        {
+            if (!Primitive || Primitive == OpaqueLabelProxy)
+            {
+                continue;
+            }
+            bool bTranslucent = false;
+            for (int32 MaterialIndex = 0; MaterialIndex < Primitive->GetNumMaterials(); ++MaterialIndex)
+            {
+                const UMaterialInterface* Material = Primitive->GetMaterial(MaterialIndex);
+                bTranslucent |= Material && IsTranslucentBlendMode(Material->GetBlendMode());
+            }
+            if (bTranslucent)
+            {
+                TranslucentBounds += Primitive->Bounds.GetBox();
+            }
+        }
+    }
+
+    if (!TranslucentBounds.IsValid)
+    {
+        Context.AddWarning(FText::FromString(TEXT("同一 Actor 上没有可用于比较 OpaqueLabelProxy 的半透明源图元。")));
+    }
+    else if (OpaqueLabelProxy->IsRegistered())
+    {
+        const FBox ProxyBounds = OpaqueLabelProxy->Bounds.GetBox();
+        const FVector SourceSize = TranslucentBounds.GetSize();
+        const FVector ProxySize = ProxyBounds.GetSize();
+        const FVector CenterDelta = (ProxyBounds.GetCenter() - TranslucentBounds.GetCenter()).GetAbs();
+        float MaxRelativeError = 0.0f;
+        for (int32 Axis = 0; Axis < 3; ++Axis)
+        {
+            MaxRelativeError = FMath::Max(MaxRelativeError,
+                CenterDelta[Axis] / FMath::Max(SourceSize[Axis], 1.0));
+            MaxRelativeError = FMath::Max(MaxRelativeError,
+                FMath::Abs(ProxySize[Axis] - SourceSize[Axis]) / FMath::Max(SourceSize[Axis], 1.0));
+        }
+        if (MaxRelativeError > FMath::Clamp(OpaqueProxyBoundsTolerance, 0.0f, 1.0f))
+        {
+            Context.AddWarning(FText::Format(
+                FText::FromString(TEXT("OpaqueLabelProxy 与半透明源包围盒的最大相对偏差为 {0}，超过容差 {1}。")),
+                FText::AsNumber(MaxRelativeError),
+                FText::AsNumber(OpaqueProxyBoundsTolerance)));
+        }
+    }
+
+    return CombineDataValidationResults(Result, Super::IsDataValid(Context));
+}
+#endif
+/** 恢复旧代理状态，避免策略热更新后残留标签专用可见性。 */
+void USemanticObjectComponent::ReleaseOpaqueLabelProxyState()
+{
+    if (UPrimitiveComponent* PreviousProxy = AppliedOpaqueLabelProxy.Get())
+    {
+        UE::SensorSimulation::InstanceCapture::UnregisterOpaqueLabelProxy(PreviousProxy);
+        UE::SensorSimulation::InstanceCapture::UnregisterPrimitive(PreviousProxy);
+        PreviousProxy->SetRenderCustomDepth(false);
+        PreviousProxy->SetVisibleInSceneCaptureOnly(bAppliedProxyWasCaptureOnly);
+    }
+    AppliedOpaqueLabelProxy.Reset();
+    bAppliedProxyWasCaptureOnly = false;
+}
+
+/** 接管有效代理，使其只对标签 SceneCapture 可见。 */
+void USemanticObjectComponent::ApplyOpaqueLabelProxyState()
+{
+    // 代理隔离生命周期与标签激活策略分离：即使切到 Ignore，只要仍配置有效代理，
+    // 它就继续保持“主视口隐藏、RGB/Depth SceneCapture 隐藏”，但不写 Semantic/Instance。
+    UPrimitiveComponent* DesiredProxy = OpaqueLabelProxy.Get();
+    if (!DesiredProxy || DesiredProxy->GetOwner() != GetOwner() || !DesiredProxy->IsRegistered())
+    {
+        DesiredProxy = nullptr;
+    }
+    if (DesiredProxy)
+    {
+        for (int32 MaterialIndex = 0; MaterialIndex < DesiredProxy->GetNumMaterials(); ++MaterialIndex)
+        {
+            const UMaterialInterface* Material = DesiredProxy->GetMaterial(MaterialIndex);
+            if (Material && IsTranslucentBlendMode(Material->GetBlendMode()))
+            {
+                DesiredProxy = nullptr;
+                break;
+            }
+        }
+    }
+    if (AppliedOpaqueLabelProxy.Get() != DesiredProxy)
+    {
+        ReleaseOpaqueLabelProxyState();
+    }
+    if (!DesiredProxy)
+    {
+        if (TranslucentLabelPolicy == ETranslucentLabelPolicy::OpaqueProxy)
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("OpaqueProxy policy on '%s' requires a registered, opaque PrimitiveComponent on the same Actor."),
+                *GetNameSafe(GetOwner()));
+        }
+        return;
+    }
+    if (!AppliedOpaqueLabelProxy.IsValid())
+    {
+        bAppliedProxyWasCaptureOnly = DesiredProxy->bVisibleInSceneCaptureOnly;
+        AppliedOpaqueLabelProxy = DesiredProxy;
+    }
+    DesiredProxy->SetVisibleInSceneCaptureOnly(true);
+    UE::SensorSimulation::InstanceCapture::RegisterOpaqueLabelProxy(DesiredProxy);
+}
+/** 公开应用运行时标签配置，确保策略切换在下一次 Capture 前完成。 */
+void USemanticObjectComponent::ApplyCaptureConfiguration()
+{
+    ApplyCaptureRenderState();
+}
+
+
 /** 保存语义注册表分配的会话内实例编号。 */
 void USemanticObjectComponent::SetAssignedInstanceId(
     const uint32 InInstanceId,
@@ -87,7 +273,7 @@ uint32 USemanticObjectComponent::GetRequiredInstanceIdCount() const
     return static_cast<uint32>(FMath::Min<uint64>(RequiredCount, MAX_uint32));
 }
 
-/** 把语义模板和完整 InstanceId 同步到所属 Actor 的所有可渲染图元。 */
+/** 把语义模板和完整 InstanceId 同步到所属 Actor 的图元或显式标签代理。 */
 void USemanticObjectComponent::ApplyCaptureRenderState()
 {
     if (!GetOwner())
@@ -95,10 +281,15 @@ void USemanticObjectComponent::ApplyCaptureRenderState()
         return;
     }
 
+    ApplyOpaqueLabelProxyState();
+    UPrimitiveComponent* ActiveProxy =
+        TranslucentLabelPolicy == ETranslucentLabelPolicy::OpaqueProxy
+            ? AppliedOpaqueLabelProxy.Get()
+            : nullptr;
     uint8 ImageSemanticId = 0;
     const bool bValidImageId =
         UE::SensorSimulation::SemanticLabels::TryConvertToImageId(SemanticId, ImageSemanticId);
-    const bool bShouldRender = bRenderToSemanticCapture && bValidImageId;
+    const bool bShouldRenderSemantic = bRenderToSemanticCapture && bValidImageId;
     if (bRenderToSemanticCapture && !bValidImageId)
     {
         UE_LOG(LogTemp, Error,
@@ -113,35 +304,37 @@ void USemanticObjectComponent::ApplyCaptureRenderState()
     uint64 NextInternalInstanceId = static_cast<uint64>(InstanceId) + 1u;
     for (UPrimitiveComponent* Primitive : Primitives)
     {
-        // 为所属 Actor 的图元启用 CustomDepth
-        Primitive->SetRenderCustomDepth(bShouldRender);
-        if (bShouldRender)
+        bool bIsTranslucent = false;
+        for (int32 MaterialIndex = 0; MaterialIndex < Primitive->GetNumMaterials(); ++MaterialIndex)
         {
-            // CustomStencil 只有 8 位；完整 SemanticId 仍保留给 LiDAR 和 Ground Truth。
-            // 有效 ID 原样写入，不再把非法值静默 Clamp 成其他类别。
+            const UMaterialInterface* Material = Primitive->GetMaterial(MaterialIndex);
+            bIsTranslucent |= Material && IsTranslucentBlendMode(Material->GetBlendMode());
+        }
+        const bool bIsActiveProxy = Primitive == ActiveProxy;
+        // A configured proxy may write labels only while a valid OpaqueProxy policy is active.
+        const bool bIsConfiguredProxy = Primitive == OpaqueLabelProxy;
+        const bool bEligibleForLabels = bIsActiveProxy || (!bIsTranslucent && !bIsConfiguredProxy);
+        const bool bRenderSemanticPrimitive = bShouldRenderSemantic && bEligibleForLabels;
+        Primitive->SetRenderCustomDepth(bRenderSemanticPrimitive);
+        if (bRenderSemanticPrimitive)
+        {
             Primitive->SetCustomDepthStencilValue(ImageSemanticId);
         }
 
-        // InstanceId 通过独立图元注册表绑定到每个 Draw，不进入 8 位 CustomStencil。
-        if (bRenderToInstanceCapture && InstanceId > 0 && Primitive->IsRegistered())
+        if (bRenderToInstanceCapture && InstanceId > 0 && Primitive->IsRegistered() && bEligibleForLabels)
         {
-            if (const UInstancedStaticMeshComponent* Instanced =
-                Cast<UInstancedStaticMeshComponent>(Primitive))
+            if (const UInstancedStaticMeshComponent* Instanced = Cast<UInstancedStaticMeshComponent>(Primitive))
             {
                 const int32 InternalCount = FMath::Max(0, Instanced->GetInstanceCount());
                 if (InternalCount == 0)
                 {
-                    // 空 ISM/HISM 没有可写像素，也不应被误报为热更新后的数量越界。
                     UE::SensorSimulation::InstanceCapture::UnregisterPrimitive(Primitive);
                 }
-                else if (
-                    NextInternalInstanceId + static_cast<uint64>(InternalCount) <=
+                else if (NextInternalInstanceId + static_cast<uint64>(InternalCount) <=
                     static_cast<uint64>(InstanceId) + AllocatedInstanceIdCount)
                 {
                     UE::SensorSimulation::InstanceCapture::RegisterPrimitive(
-                        Primitive,
-                        static_cast<uint32>(NextInternalInstanceId),
-                        true,
+                        Primitive, static_cast<uint32>(NextInternalInstanceId), true,
                         static_cast<uint32>(InternalCount));
                     NextInternalInstanceId += static_cast<uint64>(InternalCount);
                 }
@@ -149,16 +342,13 @@ void USemanticObjectComponent::ApplyCaptureRenderState()
                 {
                     UE::SensorSimulation::InstanceCapture::UnregisterPrimitive(Primitive);
                     UE_LOG(LogTemp, Error,
-                        TEXT("ISM/HISM '%s' changed instance count after ID allocation; ")
-                        TEXT("re-register the SemanticObjectComponent before Instance Capture."),
+                        TEXT("ISM/HISM '%s' changed instance count after ID allocation; re-register the SemanticObjectComponent before Instance Capture."),
                         *GetNameSafe(Primitive));
                 }
             }
             else
             {
-                UE::SensorSimulation::InstanceCapture::RegisterPrimitive(
-                    Primitive,
-                    static_cast<uint32>(InstanceId));
+                UE::SensorSimulation::InstanceCapture::RegisterPrimitive(Primitive, static_cast<uint32>(InstanceId));
             }
         }
         else
@@ -167,7 +357,6 @@ void USemanticObjectComponent::ApplyCaptureRenderState()
         }
     }
 }
-
 /** 从 Instance 注册表移除 Actor 的全部图元；可安全重复调用。 */
 void USemanticObjectComponent::UnregisterInstancePrimitives()
 {

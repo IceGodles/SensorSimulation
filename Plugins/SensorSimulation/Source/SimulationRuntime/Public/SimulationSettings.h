@@ -34,4 +34,21 @@ public:
     /** 确定性数据集模式使用的随机种子，相同种子保证可复现的 Actor 轨迹和帧序列。 */
     UPROPERTY(Config, EditAnywhere, Category="Deterministic")
     int32 RandomSeed = 42;
+
+    /** 将配置目录解析为稳定绝对路径：空值和相对值均锚定 Project/Saved。 */
+    static FString ResolveDatasetRoot(const FDirectoryPath& ConfiguredRoot);
+};
+
+/** 当前 Dataset Session 从 Settings CDO 一次性复制的不可变运行参数。 */
+struct SIMULATIONRUNTIME_API FSimulationRuntimeSettingsSnapshot
+{
+    ESimulationMode SimulationMode = ESimulationMode::Realtime;
+    double FixedStepSeconds = 0.05;
+    int32 MaxPendingFrames = 8;
+    FString DatasetRoot;
+    double FrameTimeoutSeconds = 2.0;
+    int32 RandomSeed = 42;
+
+    /** 从 Settings 对象捕获一份值语义快照。 */
+    static FSimulationRuntimeSettingsSnapshot Capture(const USimulationSettings& Settings);
 };

@@ -3,6 +3,18 @@
 #include "Components/ActorComponent.h"
 #include "SemanticObjectComponent.generated.h"
 
+class UPrimitiveComponent;
+
+/** 半透明对象在单层 Semantic/Instance 标签中的产品策略。 */
+UENUM(BlueprintType)
+enum class ETranslucentLabelPolicy : uint8
+{
+    /** 忽略透明表面，让其后的最近受支持不透明对象获得标签。 */
+    Ignore UMETA(DisplayName="Ignore Translucent Surface"),
+    /** 使用显式不透明代理表示玻璃、灯罩或透明防护罩自身。 */
+    OpaqueProxy UMETA(DisplayName="Use Opaque Label Proxy")
+};
+
 UCLASS(ClassGroup=(SensorSimulation), meta=(BlueprintSpawnableComponent))
 /** 语义组件：
  *  为 Actor 提供语义类别、实例编号和自定义深度标记。 */
@@ -39,6 +51,34 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Semantic")
     bool bRenderToInstanceCapture = true;
 
+    /** 决定透明表面是被忽略，还是由显式不透明代理写入标签。 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Semantic|Translucent")
+    ETranslucentLabelPolicy TranslucentLabelPolicy = ETranslucentLabelPolicy::Ignore;
+
+    /**
+     * OpaqueProxy 策略使用的同 Actor 不透明图元。
+     * 代理继承 SemanticId/InstanceId，只参与 Semantic/Instance 标签捕获。
+     */
+    UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category="Semantic|Translucent", meta=(UseComponentPicker, AllowedClasses="/Script/Engine.PrimitiveComponent", EditCondition="TranslucentLabelPolicy==ETranslucentLabelPolicy::OpaqueProxy"))
+    TObjectPtr<UPrimitiveComponent> OpaqueLabelProxy = nullptr;
+
+    /** 代理与透明源包围盒允许的相对偏差；超出后编辑器数据验证给出警告。 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Semantic|Translucent", meta=(ClampMin="0.0", ClampMax="1.0", EditCondition="TranslucentLabelPolicy==ETranslucentLabelPolicy::OpaqueProxy"))
+    float OpaqueProxyBoundsTolerance = 0.2f;
+
+    /** 返回当前 OpaqueProxy 配置是否可安全参与标签捕获。 */
+    UFUNCTION(BlueprintPure, Category="Semantic|Translucent")
+    bool HasValidOpaqueLabelProxy() const;
+
+    /** 应用运行时修改后的标签、透明策略和代理配置，供蓝图或 C++ 热切换调用。 */
+    UFUNCTION(BlueprintCallable, Category="Semantic")
+    void ApplyCaptureConfiguration();
+
+#if WITH_EDITOR
+    /** 在编辑器保存、提交或人工校验时检查 OpaqueProxy 产品配置。 */
+    virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
+#endif
+
 /** 组件注册时立即把语义/实例捕获状态同步到所属 Actor 的图元。 */
     virtual void OnRegister() override;
 /** 组件注销前移除图元到 InstanceId 的非拥有型映射，防止 SceneProxy 身份悬空。 */
@@ -65,6 +105,14 @@ private:
     void ApplyCaptureRenderState();
     /** 从独立 Instance 注册表注销所属 Actor 的全部图元。 */
     void UnregisterInstancePrimitives();
+    /** 应用或撤销 OpaqueProxy 的标签专用可见性与 Renderer 登记。 */
+    void ApplyOpaqueLabelProxyState();
+    /** 恢复上一个代理被接管前的可见性并从 Renderer 注销。 */
+    void ReleaseOpaqueLabelProxyState();
     /** Actor 和 ISM/HISM 内部实例共同占用的连续 InstanceId 数量。 */
     uint32 AllocatedInstanceIdCount = 1;
+    /** 最近一次由本组件接管的代理，用于热更新时精确恢复旧对象。 */
+    TWeakObjectPtr<UPrimitiveComponent> AppliedOpaqueLabelProxy;
+    /** 代理接管前是否已经是“仅 SceneCapture 可见”。 */
+    bool bAppliedProxyWasCaptureOnly = false;
 };

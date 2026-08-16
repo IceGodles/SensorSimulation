@@ -57,12 +57,12 @@
 
 1. **FImpl 改为 FRunnable**：继承 FRunnable，实现 Init/Run/Stop 接口
 2. **后台 Worker 线程**：创建 FRunnableThread，优先级 BelowNormal
-3. **Run 循环**：Dequeue → ExportFrame → 休眠 1ms 避免忙等
+3. **Run 循环**：Dequeue → ExportFrame；空队列等待 FEvent，由 Enqueue/Stop 唤醒
 4. **退出排空**：Stop 后先排空队列中剩余帧再退出
 5. **PNG Writer**：使用 IImageWrapperModule 将 RGBA8→BGRA→PNG 编码
 6. **BIN Writer**：每点 4 个 float32（x,y,z,intensity）= 16 字节
 7. **JSON Writer**：使用 TJsonWriter 输出 Ground Truth 和帧元数据
-8. **背压策略**：RejectNewest（拒绝）、DropOldest（丢弃最旧）、BlockDatasetClock（阻塞等待）
+8. **背压策略**：RejectNewest（拒绝）、DropOldest（丢弃最旧）、PauseDatasetClock（非阻塞显式暂停）
 9. **统计计数**：ExportedFrameCount、FailedFrameCount 原子计数器
 10. **Subsystem 集成**：Initialize 创建并启动 ExportService，Tick 中将完整帧入队，Deinitialize 停止
 
@@ -90,7 +90,7 @@ Saved/SensorSimulation/<SessionName>/
 ### 注意事项
 
 - PNG 编码在 Worker 线程执行，不阻塞 Game Thread
-- BlockDatasetClock 背压会阻塞 Subsystem::Tick，仅用于确定性模式
+- PauseDatasetClock 不阻塞 Subsystem::Tick；完整帧留在 FrameAssembler，独立调度器等待 Export 容量
 - 像素格式转换（RGBA→BGRA）在 Worker 线程完成
 
 ### 后续优化
@@ -162,8 +162,8 @@ Saved/SensorSimulation/<SessionName>/
 
 1. **SimulationSettings 新增 RandomSeed**：默认 42，可在项目设置中配置
 2. **Subsystem::Initialize**：DeterministicDataset 模式下调用 FMath::RandInit 和 FMath::SRandInit 设置种子
-3. **Subsystem::Tick**：DeterministicDataset 模式下，等待 Pending 帧全部完成后才请求新帧
-4. **背压联动**：Deterministic 模式使用 BlockDatasetClock 策略，队列满时阻塞采样
+3. **FSimulationScheduler**：DeterministicDataset 忽略 Tick DeltaTime，仅在帧流水线为空且 Export 有容量时推进一个固定步
+4. **背压联动**：Deterministic 模式使用 PauseDatasetClock，队列满时显式冻结时间轴且不阻塞游戏线程
 
 ### 涉及文件
 
@@ -172,8 +172,10 @@ Saved/SensorSimulation/<SessionName>/
 
 ### 后续优化
 
-- 支持 Seed 从命令行参数传入
-- 记录 Seed 到 Session Metadata
+- [x] Seed 已记录到 Session Metadata。
+- [x] Session 设置已使用不可变运行时快照，DatasetRoot 已稳定解析。
+- 支持 Seed、模式和输出目录从命令行覆盖后再捕获快照。
+- 增加暂停原因、时长和队列高水位指标。
 
 ---
 

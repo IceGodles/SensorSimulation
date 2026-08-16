@@ -50,8 +50,9 @@ struct FFrameAssemblerStats
 class SIMULATIONRUNTIME_API FFrameAssembler
 {
 public:
-/** 创建或更新指定编号的待聚合帧，并记录整帧预期模态。 */
-    void BeginFrame(const FFrameHeader& Header, EPayloadType ExpectedPayloads);
+/** 创建待聚合帧；CreationTimeSeconds 使用会话单调时钟，省略时兼容旧时间戳。 */
+    void BeginFrame(const FFrameHeader& Header, EPayloadType ExpectedPayloads,
+        TOptional<double> CreationTimeSeconds = {});
 /** 注册传感器的预期模态及逐 ChannelGuid 图像项；旧调用可省略图像通道。 */
     void RegisterSensor(
         uint64 FrameId,

@@ -1,5 +1,6 @@
 #include "CameraRigComponent.h"
 #include "InstanceCaptureTarget.h"
+#include "InstanceCaptureRegistry.h"
 #include "InstanceCaptureViewExtension.h"
 #include "SemanticCaptureViewExtension.h"
 #include "Components/SceneCaptureComponent2D.h"
@@ -577,6 +578,53 @@ void UCameraRigComponent::DestroyChannels()
     bHasAppliedConfiguration = false;
 }
 
+/**
+ * 让 OpaqueProxy 只进入标签通道。
+ *
+ * bVisibleInSceneCaptureOnly 已使代理不进入主视口；这里再把代理加入 RGB/Depth
+ * SceneCapture 的 HiddenComponents。Semantic/Instance 则移除本 Rig 上一次管理的条目。
+ */
+void UCameraRigComponent::RefreshOpaqueLabelProxyVisibility(FChannelRuntime& Channel)
+{
+    if (!Channel.Capture)
+    {
+        return;
+    }
+
+    for (const TWeakObjectPtr<UPrimitiveComponent>& PreviousProxy : Channel.HiddenLabelProxies)
+    {
+        Channel.Capture->HiddenComponents.Remove(PreviousProxy);
+    }
+    Channel.HiddenLabelProxies.Reset();
+
+    const bool bVisualChannel =
+        Channel.Config.ChannelType == ECameraChannelType::Rgb ||
+        Channel.Config.ChannelType == ECameraChannelType::Depth;
+    const bool bInstanceChannel = Channel.Config.ChannelType == ECameraChannelType::Instance;
+    if (!bVisualChannel && !bInstanceChannel)
+    {
+        return;
+    }
+
+    const TArray<TWeakObjectPtr<UPrimitiveComponent>> Proxies =
+        UE::SensorSimulation::InstanceCapture::GetOpaqueLabelProxies(GetWorld());
+    for (const TWeakObjectPtr<UPrimitiveComponent>& Proxy : Proxies)
+    {
+        if (!Proxy.IsValid())
+        {
+            continue;
+        }
+        // RGB/Depth 永远隔离标签代理；Instance 只显示当前确实绑定 ID 的激活代理。
+        // Ignore 策略下代理仍保持 capture-only 资产状态，但不能遮挡其后的真实标签对象。
+        const bool bHide = bVisualChannel ||
+            !UE::SensorSimulation::InstanceCapture::IsPrimitiveRegistered(Proxy.Get());
+        if (bHide)
+        {
+            Channel.HiddenLabelProxies.Add(Proxy);
+            Channel.Capture->HideComponent(Proxy.Get());
+        }
+    }
+}
 /** 根据 RGB、标签或深度模态配置场景捕获参数。 */
 void UCameraRigComponent::ConfigureCapture(FChannelRuntime& Channel)
 {
@@ -700,6 +748,14 @@ ECaptureRequestResult UCameraRigComponent::SubmitCapture(const FCaptureRequest& 
             continue;
         }
 
+        // 标签代理可能在 Camera Rig 创建后才注册；每次提交前刷新，保证热更新立即生效。
+        RefreshOpaqueLabelProxyVisibility(Runtime);
+        // Instance 是离散标签快照，不应复用上一帧的遮挡/时序历史；CameraCut 强制当前 View
+        // 使用本帧 Scene/GPU Scene 状态，避免运动对象在 D3D12 中沿用旧可见性结果。
+        if (PayloadType == EPayloadType::Instance)
+        {
+            Runtime.Capture->bCameraCutThisFrame = true;
+        }
         // 拍摄！
         // CaptureScene 提交本帧捕获命令，等待渲染线程执行
         Runtime.Capture->CaptureScene();

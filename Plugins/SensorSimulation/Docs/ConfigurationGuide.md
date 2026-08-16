@@ -16,7 +16,7 @@
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | MaxPendingFrames | int | 8 | 导出队列最大积压帧数 |
-| DatasetRoot | Path | (空) | 数据集输出根目录，空则使用 `Saved/SensorSimulation/` |
+| DatasetRoot | Path | (空) | 空值使用 `Project/Saved/SensorSimulation`；相对路径锚定 `Project/Saved`；绝对路径直接使用 |
 
 ### 帧设置
 

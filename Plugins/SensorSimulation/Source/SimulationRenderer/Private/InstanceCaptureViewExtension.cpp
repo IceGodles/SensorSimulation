@@ -10,7 +10,7 @@
 #include "Nanite/NaniteShared.h"
 #include "PixelShaderUtils.h"
 #include "PostProcess/PostProcessMaterialInputs.h"
-#include "PostProcess/PostProcessing.h"
+#include "RendererCompatibility.h"
 #include "PrimitiveSceneProxy.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
@@ -59,21 +59,18 @@ struct FInstanceCaptureElementData final : public FMeshMaterialShaderElementData
 {
     uint32 BaseInstanceId = 0;
     uint32 bUseInternalInstanceId = 0;
-    FMatrix44f TranslatedWorldToClip = FMatrix44f::Identity;
 };
 
 /** 使用当前 VertexFactory 和 View 矩阵生成与基础 Pass 一致的几何位置。 */
 class FInstanceCaptureVS final : public FMeshMaterialShader
 {
     DECLARE_SHADER_TYPE(FInstanceCaptureVS, MeshMaterial);
-    LAYOUT_FIELD(FShaderParameter, TranslatedWorldToClipParameter);
 
 public:
     FInstanceCaptureVS() = default;
     explicit FInstanceCaptureVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
         : FMeshMaterialShader(Initializer)
     {
-        TranslatedWorldToClipParameter.Bind(Initializer.ParameterMap, TEXT("InstanceTranslatedWorldToClip"));
     }
 
     /** 默认表面材质需要为所有 SM5 VertexFactory 提供 Instance 几何着色器。 */
@@ -93,22 +90,7 @@ public:
         OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1);
     }
 
-    /** Bind the capture View matrix explicitly because this pass executes from post processing. */
-    void GetShaderBindings(
-        const FScene* Scene,
-        const ERHIFeatureLevel::Type FeatureLevel,
-        const FPrimitiveSceneProxy* PrimitiveSceneProxy,
-        const FMaterialRenderProxy& MaterialRenderProxy,
-        const FMaterial& Material,
-        const FInstanceCaptureElementData& ShaderElementData,
-        FMeshDrawSingleShaderBindings& ShaderBindings) const
-    {
-        FMeshMaterialShader::GetShaderBindings(
-            Scene, FeatureLevel, PrimitiveSceneProxy, MaterialRenderProxy,
-            Material, ShaderElementData, ShaderBindings);
-        ShaderBindings.Add(
-            TranslatedWorldToClipParameter, ShaderElementData.TranslatedWorldToClip);
-    }
+
 };
 
 /** 把每个 Draw 绑定的 uint32 InstanceId 原样写入 R32_UINT。 */
@@ -243,8 +225,10 @@ public:
         const FMaterial& SourceMaterial =
             MeshBatch.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
         
-        // 只处理不需要复杂透明混合的物体
-        if (!IsOpaqueBlendMode(SourceMaterial))
+        // Instance 产品支持 Opaque 与 Masked；Translucent 由注册阶段按既定策略排除。
+        // 不能使用 IsOpaqueBlendMode：UE 将 BLEND_Masked 与 BLEND_Opaque 分开，
+        // 否则下方 bIsMasked 分支永远不可达，foliage 的不透明像素也不会写入标签。
+        if (!IsOpaqueOrMaskedBlendMode(SourceMaterial))
         {
             return;
         }
@@ -339,8 +323,6 @@ private:
         // PS类会绑定这个ID，最终usf接收
         ShaderElementData.BaseInstanceId = Binding.BaseInstanceId;
         ShaderElementData.bUseInternalInstanceId = Binding.bUseInternalInstanceId ? 1u : 0u;
-        ShaderElementData.TranslatedWorldToClip = FMatrix44f(
-            ViewIfDynamicMeshCommand->ViewMatrices.GetTranslatedViewProjectionMatrix());
 
         BuildMeshDrawCommands(
             MeshBatch,
@@ -363,6 +345,7 @@ private:
 
 /** Bind the integer color target, pass-local depth, and VertexFactory static uniforms. */
 BEGIN_SHADER_PARAMETER_STRUCT(FInstanceCapturePassParameters, )
+    SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
     SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
     SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
     RENDER_TARGET_BINDING_SLOTS()
@@ -529,6 +512,7 @@ FScreenPassTexture FInstanceCaptureViewExtension::RenderInstanceIds(
 
     FInstanceCapturePassParameters* PassParameters =
         GraphBuilder.AllocParameters<FInstanceCapturePassParameters>();
+    PassParameters->View = View.ViewUniformBuffer;
     PassParameters->Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 
     PassParameters->RenderTargets[0] =
@@ -541,7 +525,7 @@ FScreenPassTexture FInstanceCaptureViewExtension::RenderInstanceIds(
 
     // Borrow the formal post-process instance-culling manager so ISM/HISM draws use GPU Scene instance lists.
     const UE::Renderer::PostProcess::FExtensionContext* ExtensionContext =
-        UE::Renderer::PostProcess::GetExtensionContext_RenderThread();
+        SensorSimulation::RendererCompatibility::GetPostProcessContext_RenderThread();
     if (!ExtensionContext || !ExtensionContext->InstanceCullingManager)
     {
         UE_LOG(LogInstanceCapturePass, Warning, TEXT("Instance capture skipped: instance-culling context unavailable."));
@@ -600,6 +584,11 @@ FScreenPassTexture FInstanceCaptureViewExtension::RenderInstanceIds(
             InstanceDepthTexture,
             OutputRect);
     }
+
+    // InstanceTarget 是跨 RDG 图使用的外部 RHI 纹理，后续渲染命令会直接把它复制到 GPU Readback。
+    // D3D12 必须显式声明图结束后的 CopySrc 状态；否则下一条 CopyTexture 可能偶发读到清屏结果，
+    // 即使本图已经正确构建并提交全部 Instance Draw。D3D11 的隐式状态模型会掩盖该问题。
+    GraphBuilder.SetTextureAccessFinal(OutputTexture, ERHIAccess::CopySrc);
 
     return ReturnSceneColor();
 }

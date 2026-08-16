@@ -1,0 +1,59 @@
+diff --git a/Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.h b/Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.h
+--- a/Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.h
++++ b/Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.h
+@@ -14,11 +14,24 @@ class FScreenPassVS;
+ class FViewInfo;
+ class FVirtualShadowMapArray;
++class FInstanceCullingManager;
+ 
+ namespace Nanite
+ {
+ 	struct FRasterResults;
+ }
+ 
++namespace UE::Renderer::PostProcess
++{
++	/** Borrowed Renderer frame context for post-process View Extension callbacks. Do not cache these pointers. */
++	struct FExtensionContext
++	{
++		FInstanceCullingManager* InstanceCullingManager = nullptr;
++		const Nanite::FRasterResults* NaniteRasterResults = nullptr;
++	};
++	/** Returns the active post-process stack context, or nullptr outside the callback. */
++	RENDERER_API const FExtensionContext* GetExtensionContext_RenderThread();
++}
++
+ // Returns whether the full post process pipeline is enabled. Otherwise, the minimal set of operations are performed.
+ bool IsPostProcessingEnabled(const FViewInfo& View);
+ 
+diff --git a/Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.cpp b/Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.cpp
+--- a/Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.cpp
++++ b/Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessing.cpp
+@@ -59,6 +59,18 @@
+ #include "MobileDistortionPass.h"
+ #include "ScenePrivate.h"
+ 
++namespace
++{
++	/** Valid only on the render thread while AddPostProcessingPasses is on the stack. */
++	const UE::Renderer::PostProcess::FExtensionContext* GPostProcessingExtensionContext = nullptr;
++}
++
++const UE::Renderer::PostProcess::FExtensionContext* UE::Renderer::PostProcess::GetExtensionContext_RenderThread()
++{
++	check(IsInRenderingThread());
++	return GPostProcessingExtensionContext;
++}
++
+ #include "SceneTextureParameters.h"
+ #include "PixelShaderUtils.h"
+ #include "ScreenSpaceRayTracing.h"
+@@ -375,6 +387,8 @@ void AddPostProcessingPasses(
+ 	using namespace UE::Renderer::PostProcess;
+ 
+ 	check(IsInRenderingThread());
++	const FExtensionContext ExtensionContext{ &InstanceCullingManager, NaniteRasterResults };
++	TGuardValue<const FExtensionContext*> ExtensionContextGuard(GPostProcessingExtensionContext, &ExtensionContext);
+ #if DO_CHECK || USING_CODE_ANALYSIS
+ 	check(View.VerifyMembersChecks());
+ #endif

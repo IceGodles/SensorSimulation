@@ -19,12 +19,18 @@ struct FExportService::FImpl : public FRunnable
 {
     explicit FImpl(int32 InCapacity)
         : Capacity(FMath::Max(1, InCapacity))
+        , WorkEvent(FPlatformProcess::GetSynchEventFromPool(false))
     {
     }
 
     ~FImpl()
     {
         StopWorker();
+        if (WorkEvent)
+        {
+            FPlatformProcess::ReturnSynchEventToPool(WorkEvent);
+            WorkEvent = nullptr;
+        }
     }
 
     // -- FRunnable 接口 --
@@ -35,19 +41,19 @@ struct FExportService::FImpl : public FRunnable
         while (!bShouldExit.Load())
         {
             FFramePacket Packet;
-            if (Pending.Dequeue(Packet))
+            bool bConsumedAny = false;
+            while (Pending.Dequeue(Packet))
             {
                 ExportFrame(Packet);
                 --PendingCount;
+                bConsumedAny = true;
             }
-            else
+            if (!bShouldExit.Load() && !bConsumedAny && WorkEvent)
             {
-                // 队列为空，短暂休眠避免忙等
-                FPlatformProcess::SleepNoStats(0.001f);
+                // 事件唤醒替代 1ms Sleep 轮询，空队列不再持续占用 Worker 时间片。
+                WorkEvent->Wait();
             }
         }
-
-        // 退出前排空剩余帧
         FFramePacket Packet;
         while (Pending.Dequeue(Packet))
         {
@@ -69,6 +75,10 @@ struct FExportService::FImpl : public FRunnable
         DatasetRoot = InDatasetRoot;
         bShouldExit.Store(false);
         bRunning.Store(true);
+        if (WorkEvent)
+        {
+            WorkEvent->Reset();
+        }
 
         // 创建 Session 输出目录
         IFileManager::Get().MakeDirectory(*DatasetRoot, true);
@@ -85,6 +95,10 @@ struct FExportService::FImpl : public FRunnable
     {
         bRunning.Store(false);
         bShouldExit.Store(true);
+        if (WorkEvent)
+        {
+            WorkEvent->Trigger();
+        }
 
         if (WorkerThread)
         {
@@ -323,6 +337,8 @@ struct FExportService::FImpl : public FRunnable
     TAtomic<int32> PendingCount { 0 };
     TAtomic<bool> bRunning { false };
     TAtomic<bool> bShouldExit { false };
+    /** Worker 在无任务时等待的事件，由 Enqueue 和 Stop 触发。 */
+    FEvent* WorkEvent = nullptr;
     FRunnableThread* WorkerThread = nullptr;
     FThreadSafeCounter ExportedFrameCount { 0 };
     FThreadSafeCounter FailedFrameCount { 0 };
@@ -386,28 +402,29 @@ bool FExportService::Enqueue(FFramePacket&& Packet, EExportBackpressurePolicy Po
             }
             break;
 
-        case EExportBackpressurePolicy::BlockDatasetClock:
-            // 等待队列有空位（用于确定性模式）
-            while (Impl->PendingCount.Load() >= Impl->Capacity && Impl->bRunning.Load())
-            {
-                FPlatformProcess::SleepNoStats(0.001f);
-            }
-            if (!Impl->bRunning.Load())
-            {
-                return false;
-            }
-            break;
+        case EExportBackpressurePolicy::PauseDatasetClock:
+            // 非阻塞返回；Subsystem 保留完整帧并显式暂停确定性调度器。
+            return false;
         }
     }
 
     Impl->Pending.Enqueue(MoveTemp(Packet));
     ++Impl->PendingCount;
+    if (Impl->WorkEvent)
+    {
+        Impl->WorkEvent->Trigger();
+    }
     return true;
 }
 
 int32 FExportService::GetPendingCount() const
 {
     return Impl->PendingCount.Load();
+}
+
+bool FExportService::HasCapacity() const
+{
+    return Impl->bRunning.Load() && Impl->PendingCount.Load() < Impl->Capacity;
 }
 
 int64 FExportService::GetExportedFrameCount() const

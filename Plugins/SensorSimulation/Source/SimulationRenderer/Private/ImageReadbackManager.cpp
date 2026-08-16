@@ -284,7 +284,7 @@ static TUniquePtr<FRHIGPUTextureReadback> AcquireReadback_RenderThread(
 {
     check(IsInRenderingThread());
     bOutReused = false;
-    // 在资源池中查找兼容资源
+    // 在资源池中查找尺寸和格式完全一致的闲置对象；整数标签也可安全逐位复用。
     const int32 ReusableIndex = State->ReusableReadbacks.IndexOfByPredicate(
         [ImageSize, PixelFormat](const FReusableReadback& Candidate)
         {
@@ -318,6 +318,7 @@ static void RecycleReadback_RenderThread(
     FPendingReadback& Pending)
 {
     check(IsInRenderingThread());
+
     FReusableReadback& Reusable = State->ReusableReadbacks.AddDefaulted_GetRef();
     Reusable.Readback = MoveTemp(Pending.Readback);
     Reusable.ImageSize = Pending.ImageSize;
@@ -523,6 +524,14 @@ static bool EnqueueValidatedTexture(
             Pending.ChannelKey = ChannelKey;
             Pending.EnqueueSeconds = EnqueueSeconds;
 
+
+            // FRHIGPUTextureReadback::EnqueueCopy 只负责 staging 目标的状态转换，不会转换源纹理。
+            // 因此在跨 RDG 图的原始 RHI Copy 前显式进入 CopySrc；D3D11 的隐式状态会掩盖
+            // 这一遗漏，而 D3D12 可能在 Instance Draw 尚未形成可复制状态时读到清屏结果。
+            RHICmdList.Transition(FRHITransitionInfo(
+                Texture,
+                ERHIAccess::Unknown,
+                ERHIAccess::CopySrc));
             // GPU Copy 只进入 staging/readback 资源；CPU 字节仍由后续 Pump 的 Lock/转换生成。
             Pending.Readback->EnqueueCopy(
                 RHICmdList,
