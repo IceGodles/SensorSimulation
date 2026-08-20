@@ -33,6 +33,8 @@ public:
     bool Enqueue(FFramePacket&& Packet, EExportBackpressurePolicy Policy);
 /** 返回当前仍在队列中等待处理的帧数量。 */
     int32 GetPendingCount() const;
+    /** 返回 Session 内观测到的最高队列深度。 */
+    int32 GetPeakPendingCount() const;
 /** 返回队列是否还能立即接收一个完整帧，不进行等待。 */
     bool HasCapacity() const;
 /** 返回 Worker 已成功写出的帧数量。 */

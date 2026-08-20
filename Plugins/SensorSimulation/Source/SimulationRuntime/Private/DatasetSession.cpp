@@ -1,4 +1,5 @@
 #include "DatasetSession.h"
+#include "FrameAssembler.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "Misc/Guid.h"
@@ -125,10 +126,11 @@ void FDatasetSession::RegisterRendererMetrics(const FCameraRendererMetricsSnapsh
 }
 
 /** 写入 metadata.json。 */
-void FDatasetSession::WriteMetadata(int64 TotalFrames, int64 CompletedFrames, int64 FailedFrames,
-                                     int64 TimeoutFrames, int64 BusyFrames, int64 RejectedFrames,
-                                     int64 DuplicatePayloads, int64 LatePayloads,
-                                     int32 Seed, const FString& Mode)
+void FDatasetSession::WriteMetadata(
+    const FFrameAssemblerStats& FrameStats,
+    const int32 ExportPeakPending,
+    const int32 Seed,
+    const FString& Mode)
 {
     if (SessionDirectory.IsEmpty())
     {
@@ -146,14 +148,17 @@ void FDatasetSession::WriteMetadata(int64 TotalFrames, int64 CompletedFrames, in
     Writer->WriteValue(TEXT("random_seed"), Seed);
 
     Writer->WriteObjectStart(TEXT("statistics"));
-    Writer->WriteValue(TEXT("total_frames"), TotalFrames);
-    Writer->WriteValue(TEXT("completed_frames"), CompletedFrames);
-    Writer->WriteValue(TEXT("failed_frames"), FailedFrames);
-    Writer->WriteValue(TEXT("timeout_frames"), TimeoutFrames);
-    Writer->WriteValue(TEXT("busy_frames"), BusyFrames);
-    Writer->WriteValue(TEXT("rejected_frames"), RejectedFrames);
-    Writer->WriteValue(TEXT("duplicate_payloads"), DuplicatePayloads);
-    Writer->WriteValue(TEXT("late_payloads"), LatePayloads);
+    Writer->WriteValue(TEXT("total_frames"), FrameStats.TotalFrames);
+    Writer->WriteValue(TEXT("completed_frames"), FrameStats.CompletedFrames);
+    Writer->WriteValue(TEXT("failed_frames"), FrameStats.FailedFrames);
+    Writer->WriteValue(TEXT("timeout_frames"), FrameStats.TimeoutFrames);
+    Writer->WriteValue(TEXT("busy_frames"), FrameStats.BusyFrames);
+    Writer->WriteValue(TEXT("rejected_frames"), FrameStats.RejectedFrames);
+    Writer->WriteValue(TEXT("capacity_rejected_frames"), FrameStats.CapacityRejectedFrames);
+    Writer->WriteValue(TEXT("duplicate_payloads"), FrameStats.DuplicatePayloads);
+    Writer->WriteValue(TEXT("late_payloads"), FrameStats.LatePayloads);
+    Writer->WriteValue(TEXT("frame_assembler_peak_pending"), FrameStats.PeakPendingFrames);
+    Writer->WriteValue(TEXT("export_peak_pending"), ExportPeakPending);
     Writer->WriteObjectEnd();
 
     // Renderer 指标以最终/最近快照写入会话，便于离线判断背压、资源重建和特定模态延迟。

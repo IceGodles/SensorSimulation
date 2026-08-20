@@ -4,6 +4,8 @@
 #include "SimulationTypes.h"
 #include "CameraRigComponent.h"
 
+struct FFrameAssemblerStats;
+
 /** 数据集采集会话的运行时状态。 */
 enum class ESessionState : uint8
 {
@@ -55,9 +57,8 @@ public:
     FString GetSessionId() const { return SessionId; }
 
     /** 写入 metadata.json，包含会话配置、帧终态和异常 Payload 统计。 */
-    void WriteMetadata(int64 TotalFrames, int64 CompletedFrames, int64 FailedFrames,
-                       int64 TimeoutFrames, int64 BusyFrames, int64 RejectedFrames,
-                       int64 DuplicatePayloads, int64 LatePayloads,
+    void WriteMetadata(const FFrameAssemblerStats& FrameStats,
+                       int32 ExportPeakPending,
                        int32 Seed, const FString& Mode);
 
 private:

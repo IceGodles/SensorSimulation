@@ -165,8 +165,9 @@ RGB、Semantic、Depth 和 LiDAR 的完成时刻不同：
 - [x] 完成计数键已从 SensorName 迁移为持久 SensorGuid；普通复制生成新 GUID，PIE 复制保持身份。
 - [x] `RequestCapture` 返回 `Accepted/Busy/Rejected`；Subsystem 遇到 Busy 或 Rejected 时立即调用 `FailFrame`，不再等待超时。
 - [x] Pending 阶段的同传感器、同 `ChannelGuid` 重复 Payload 被拒绝并计入 `DuplicatePayloads`；完成队列使用 FrameId 集合保证只入队一次。
-- [x] Completed、Failed、TimedOut 都进入最近 1024 帧的有限终态历史；其后到达的 Payload 被丢弃并计入 `LatePayloads`，避免历史无限增长。
-- 下一步可为 Pending Frame 增加容量上限，并把终态历史容量开放为项目设置。
+- [x] Completed、Failed、TimedOut 都进入由 `TerminalFrameHistoryCapacity` 配置的有限终态历史；其后到达的 Payload 被丢弃并计入 `LatePayloads`，避免历史无限增长。
+- [x] Pending Frame 受 `MaxPendingAssemblyFrames` 约束；满载请求在下发传感器前被拒绝，并计入 `CapacityRejectedFrames`。
+- [x] `PeakPendingFrames` 记录 Session 内 FrameAssembler 高水位，用于离线调整容量。
 
 ---
 
@@ -874,9 +875,10 @@ Export Worker：
 - 检查每个 Writer 的返回值；`frame_info.json` 当前返回值未计入整帧成功状态。
 - 为 Depth/Instance 文件增加格式版本、字节序和无效值说明。
 - LiDAR 当前导出不包含 Point 中已有的 SemanticId、InstanceId 和 RelativeTime，需要定义扩展格式或伴随文件。
-- 把 Export 指标写入 metadata，并记录 Reject/Drop 的 FrameId。
+- [x] Export Queue 高水位与 FrameAssembler 高水位、容量拒绝数量已写入 metadata。
+- 继续记录 Reject/Drop 的具体 FrameId，并增加调度暂停次数和累计暂停时长。
 - [x] 已移除 `BlockDatasetClock` 的游戏线程忙等待；兼容别名保留，但行为已转为非阻塞暂停。
-- 下一步把暂停次数、累计暂停时长和 Export 高水位写入 metadata。
+- [x] Export 高水位已写入 metadata；下一步补充暂停次数、累计暂停时长和原因分布。
 
 ---
 

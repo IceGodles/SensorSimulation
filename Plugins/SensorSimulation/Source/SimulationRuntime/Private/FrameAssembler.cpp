@@ -2,15 +2,51 @@
 
 namespace { enum class EFrameTerminalState : uint8 { Completed, Failed, TimedOut }; }
 
+FFrameAssembler::FFrameAssembler(
+    const int32 InMaxPendingFrames,
+    const int32 InTerminalFrameHistoryCapacity)
+{
+    ConfigureLimits(InMaxPendingFrames, InTerminalFrameHistoryCapacity);
+}
+
+bool FFrameAssembler::ConfigureLimits(
+    const int32 InMaxPendingFrames,
+    const int32 InTerminalFrameHistoryCapacity)
+{
+    if (!PendingFrames.IsEmpty())
+    {
+        return false;
+    }
+    MaxPendingFrames = FMath::Max(1, InMaxPendingFrames);
+    TerminalFrameHistoryCapacity = FMath::Max(1, InTerminalFrameHistoryCapacity);
+    return true;
+}
+
 /** 创建或更新指定编号的待聚合帧，并记录整帧预期模态。 */
-void FFrameAssembler::BeginFrame(const FFrameHeader& Header, const EPayloadType ExpectedPayloads,
+bool FFrameAssembler::BeginFrame(const FFrameHeader& Header, const EPayloadType ExpectedPayloads,
     const TOptional<double> CreationTimeSeconds)
 {
+    if (PendingFrames.Contains(Header.FrameId))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Cannot begin duplicate pending FrameId %llu."), Header.FrameId);
+        return false;
+    }
+    ++Stats.TotalFrames;
+    if (!HasCapacity())
+    {
+        ++Stats.FailedFrames;
+        ++Stats.CapacityRejectedFrames;
+        UE_LOG(LogTemp, Warning,
+            TEXT("Frame %llu rejected because FrameAssembler is full (%d/%d)."),
+            Header.FrameId, PendingFrames.Num(), MaxPendingFrames);
+        return false;
+    }
     FFramePacket& Packet = PendingFrames.FindOrAdd(Header.FrameId);
     Packet.Header = Header;
     Packet.ExpectedPayloads = ExpectedPayloads;
     FrameCreationTime.FindOrAdd(Header.FrameId) = CreationTimeSeconds.Get(Header.SimulationTimestampSeconds);
-    ++Stats.TotalFrames;
+    Stats.PeakPendingFrames = FMath::Max(Stats.PeakPendingFrames, PendingFrames.Num());
+    return true;
 }
 
 /** 注册一个传感器在本帧中的预期模态，用于多传感器精确计数。 */
@@ -260,7 +296,7 @@ void FFrameAssembler::RememberTerminalFrame(const uint64 FrameId, const uint8 Te
     if (TerminalFrames.Contains(FrameId)) return;
     TerminalFrames.Add(FrameId, TerminalState);
     TerminalFrameOrder.Enqueue(FrameId);
-    while (TerminalFrames.Num() > MaxTerminalFrameHistory)
+    while (TerminalFrames.Num() > TerminalFrameHistoryCapacity)
     {
         uint64 OldestFrameId = 0;
         if (!TerminalFrameOrder.Dequeue(OldestFrameId)) break;

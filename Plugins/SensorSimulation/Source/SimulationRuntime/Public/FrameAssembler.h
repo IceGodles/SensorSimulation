@@ -44,15 +44,24 @@ struct FFrameAssemblerStats
     int64 DuplicatePayloads = 0;
     /** 帧完成、失败或超时后才到达并被丢弃的 Payload 数量。 */
     int64 LatePayloads = 0;
+    /** Session 内同时驻留在聚合器中的最高帧数量。 */
+    int32 PeakPendingFrames = 0;
+    /** 因 Pending Frame 容量已满而未创建的帧数量。 */
+    int64 CapacityRejectedFrames = 0;
 };
 
 /** 按帧编号、按传感器名称聚合图像、点云与真值模态的同步器。 */
 class SIMULATIONRUNTIME_API FFrameAssembler
 {
 public:
+    explicit FFrameAssembler(int32 InMaxPendingFrames = 16, int32 InTerminalFrameHistoryCapacity = 1024);
+    /** 仅在没有 Pending Frame 时更新容量；用于 Session 设置快照初始化。 */
+    bool ConfigureLimits(int32 InMaxPendingFrames, int32 InTerminalFrameHistoryCapacity);
 /** 创建待聚合帧；CreationTimeSeconds 使用会话单调时钟，省略时兼容旧时间戳。 */
-    void BeginFrame(const FFrameHeader& Header, EPayloadType ExpectedPayloads,
+    bool BeginFrame(const FFrameHeader& Header, EPayloadType ExpectedPayloads,
         TOptional<double> CreationTimeSeconds = {});
+    /** 返回是否还能立即创建一个同步帧。 */
+    bool HasCapacity() const { return PendingFrames.Num() < MaxPendingFrames; }
 /** 注册传感器的预期模态及逐 ChannelGuid 图像项；旧调用可省略图像通道。 */
     void RegisterSensor(
         uint64 FrameId,
@@ -91,7 +100,10 @@ private:
     /** 已结束帧的有限历史；用于把“未知帧”区分为可统计的迟到结果。 */
     TMap<uint64, uint8> TerminalFrames;
     TQueue<uint64> TerminalFrameOrder;
-    static constexpr int32 MaxTerminalFrameHistory = 1024;
+    /** 尚未导出的同步帧容量上限。 */
+    int32 MaxPendingFrames = 16;
+    /** 已结束 FrameId 的保留数量，用于识别迟到 Payload。 */
+    int32 TerminalFrameHistoryCapacity = 1024;
     /** 帧聚合统计。 */
     FFrameAssemblerStats Stats;
 

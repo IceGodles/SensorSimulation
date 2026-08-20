@@ -23,6 +23,14 @@ public:
     UPROPERTY(Config, EditAnywhere, Category="Export", meta=(ClampMin="1"))
     int32 MaxPendingFrames = 8;
 
+    /** 帧聚合器允许同时驻留的同步帧数量，独立于 Export Queue 容量。 */
+    UPROPERTY(Config, EditAnywhere, Category="Frame", meta=(ClampMin="1"))
+    int32 MaxPendingAssemblyFrames = 16;
+
+    /** 用于识别迟到 Payload 的已结束 FrameId 历史容量。 */
+    UPROPERTY(Config, EditAnywhere, Category="Frame", meta=(ClampMin="1"))
+    int32 TerminalFrameHistoryCapacity = 1024;
+
     /** 数据集文件的输出根目录。 */
     UPROPERTY(Config, EditAnywhere, Category="Export")
     FDirectoryPath DatasetRoot;
@@ -45,6 +53,8 @@ struct SIMULATIONRUNTIME_API FSimulationRuntimeSettingsSnapshot
     ESimulationMode SimulationMode = ESimulationMode::Realtime;
     double FixedStepSeconds = 0.05;
     int32 MaxPendingFrames = 8;
+    int32 MaxPendingAssemblyFrames = 16;
+    int32 TerminalFrameHistoryCapacity = 1024;
     FString DatasetRoot;
     double FrameTimeoutSeconds = 2.0;
     int32 RandomSeed = 42;

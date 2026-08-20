@@ -11,13 +11,44 @@
 - [x] `SensorSimulationHostEditor Win64 Development` 编译验证。
 - [x] Instance 32 位 Mesh Pass、R32Uint 读回/协议/Writer，以及 D3D11/D3D12 生命周期验收。
 - [x] R15 特殊对象闭环：ISM/HISM 逐内部实例 ID、D3D12 Nanite 专用导出，以及 HISM/Masked/SkeletalMesh/Translucent Ignore/OpaqueProxy 的 D3D11/D3D12 像素矩阵。
+- [x] Export Worker 与 PNG/BIN/JSON Writer。
+- [x] 基于 `SensorGuid + ChannelGuid` 的多传感器、同模态多通道完成追踪。
+- [x] Frame Timeout、终态统计、非阻塞背压与 Pending Frame 容量保护。
+- [x] 自动化 Demo Map，以及 D3D11/D3D12 多模态像素回归矩阵 Phase 1-5。
 
 仍待完成：
 
-- [ ] Export Worker 与 PNG/BIN/CSV Writer。
-- [ ] 多个同模态传感器的完成数量追踪。
-- [ ] Frame Timeout、丢帧统计与更完整的背压策略。
-- [ ] 自动化 Demo Map 和运行时像素回归测试。
+- [ ] 不同游戏帧率、人工 Export 延迟下的端到端 Session 哈希复现测试。
+- [ ] 调度暂停次数、累计暂停时长和暂停原因分布进入 metadata。
+- [ ] LiDAR 长稳/吞吐验收，以及带 SemanticId/InstanceId/RelativeTime 的扩展导出格式。
+- [ ] 多 Rig 同时退出、Pending 关卡切换、模块卸载和 RHI 设备重建压力测试。
+
+## Runtime 帧容量与可观测性收口（2026-08-20，已完成）
+
+### 为什么要这样做
+
+Realtime 模式允许上一帧仍在等待异步 Payload 时继续发起采样。若异常传感器持续不返回，单靠超时清理只能限制单帧寿命，不能严格限制瞬时 Pending Frame 数量；同时固定 1024 条终态历史不能适配不同采样率和最大异步延迟。缺少高水位统计也会让容量配置只能靠猜测。
+
+### 当前如何做
+
+- [x] `FFrameAssembler` 增加独立 `MaxPendingAssemblyFrames` 容量；满载时拒绝创建新帧，并且不向传感器下发无法归属的采集请求。
+- [x] `TerminalFrameHistoryCapacity` 取代硬编码 1024，继续以有限 FIFO 历史识别迟到 Payload。
+- [x] Session 设置快照同时冻结 Export 容量、FrameAssembler 容量与终态历史容量。
+- [x] 增加 `PeakPendingFrames`、`CapacityRejectedFrames` 和 Export `PeakPendingCount`，写入 `metadata.json/statistics`。
+- [x] 新增 `SensorSimulation.Runtime.FrameAssembler.CapacityAndPeak`，并扩展 Settings Snapshot 与 DatasetSession metadata 测试。
+
+### 验证证据
+
+- UE 5.7.2 增量编译：13/13 actions，`Result: Succeeded`，`SimulationRuntime` DLL 重新链接。
+- `Saved/Acceptance/RuntimeCapacity/RuntimeTests.log`：8/8 Runtime 测试成功，退出码 0。
+- `Saved/Acceptance/RuntimeCapacity/DatasetSessionTests.log`：2/2 DatasetSession 测试成功，退出码 0。
+
+### 下一阶段计划
+
+1. 为 `FSimulationScheduler` 增加按原因的暂停次数与累计暂停时长，并落入 metadata。
+2. 增加可控 Export 延迟测试钩子，验证不同 Tick 频率下完整 Session 的 FrameId/时间戳哈希一致。
+3. 完成 LiDAR 16×512、32×1024 的吞吐与 1000 帧长稳测试，再冻结扩展点云文件格式。
+4. 将 Renderer 多 Rig 同时退出、关卡切换和模块卸载作为独立高风险阶段执行。
 
 ## Runtime 确定性调度与会话语义收口（2026-08-16，已完成）
 

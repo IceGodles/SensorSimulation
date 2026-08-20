@@ -90,6 +90,38 @@ bool FFrameAssemblerTerminalPolicyTest::RunTest(const FString& Parameters)
     return true;
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FFrameAssemblerCapacityTest,
+    "SensorSimulation.Runtime.FrameAssembler.CapacityAndPeak",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFrameAssemblerCapacityTest::RunTest(const FString& Parameters)
+{
+    FFrameAssembler Assembler(2, 2);
+    FFrameHeader First;
+    First.FrameId = 501;
+    FFrameHeader Second;
+    Second.FrameId = 502;
+    FFrameHeader Rejected;
+    Rejected.FrameId = 503;
+
+    TestTrue(TEXT("First frame enters assembler"), Assembler.BeginFrame(First, EPayloadType::Rgb));
+    TestTrue(TEXT("Second frame reaches configured capacity"), Assembler.BeginFrame(Second, EPayloadType::Rgb));
+    TestFalse(TEXT("Third frame is rejected before sensors are requested"),
+        Assembler.BeginFrame(Rejected, EPayloadType::Rgb));
+    TestFalse(TEXT("Assembler reports no remaining capacity"), Assembler.HasCapacity());
+    TestEqual(TEXT("Peak pending records configured limit"), Assembler.GetStats().PeakPendingFrames, 2);
+    TestEqual(TEXT("Capacity rejection is counted"), Assembler.GetStats().CapacityRejectedFrames, 1ll);
+    TestEqual(TEXT("Rejected frame contributes to failed frames"), Assembler.GetStats().FailedFrames, 1ll);
+
+    TestTrue(TEXT("A pending frame can be failed to release capacity"),
+        Assembler.FailFrame(First.FrameId, FGuid(1, 1, 1, 1), TEXT("CapacityTest"), ECaptureRequestResult::Rejected));
+    TestTrue(TEXT("Released slot restores capacity"), Assembler.HasCapacity());
+    TestTrue(TEXT("A later frame can use the released slot"),
+        Assembler.BeginFrame(Rejected, EPayloadType::Rgb));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FFrameAssemblerSameTypeChannelsTest,
     "SensorSimulation.Runtime.FrameAssembler.SameTypeChannelsUseGuid",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

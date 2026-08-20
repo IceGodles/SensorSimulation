@@ -17,6 +17,9 @@ void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     SettingsSnapshot = FSimulationRuntimeSettingsSnapshot::Capture(
         *GetDefault<USimulationSettings>());
     Scheduler.Initialize(SettingsSnapshot.SimulationMode, SettingsSnapshot.FixedStepSeconds);
+    FrameAssembler.ConfigureLimits(
+        SettingsSnapshot.MaxPendingAssemblyFrames,
+        SettingsSnapshot.TerminalFrameHistoryCapacity);
     SessionStartPlatformSeconds = FPlatformTime::Seconds();
 
     if (SettingsSnapshot.SimulationMode == ESimulationMode::DeterministicDataset)
@@ -53,9 +56,8 @@ void USimulationSubsystem::Deinitialize()
             ? TEXT("DeterministicDataset") : TEXT("Realtime");
 
         DatasetSession->WriteMetadata(
-            Stats.TotalFrames, Stats.CompletedFrames, Stats.FailedFrames,
-            Stats.TimeoutFrames, Stats.BusyFrames, Stats.RejectedFrames,
-            Stats.DuplicatePayloads, Stats.LatePayloads,
+            Stats,
+            ExportService ? ExportService->GetPeakPendingCount() : 0,
             SettingsSnapshot.RandomSeed, Mode);
         DatasetSession->Stop();
     }
@@ -209,7 +211,10 @@ void USimulationSubsystem::RequestFrame(
         }
     }
 
-    FrameAssembler.BeginFrame(Header, Expected, CreationTimeSeconds);
+    if (!FrameAssembler.BeginFrame(Header, Expected, CreationTimeSeconds))
+    {
+        return;
+    }
     FrameAssembler.AddGroundTruth(Header.FrameId, CaptureGroundTruth());
 
     for (const TWeakObjectPtr<USimSensorComponentBase>& Sensor : Sensors)

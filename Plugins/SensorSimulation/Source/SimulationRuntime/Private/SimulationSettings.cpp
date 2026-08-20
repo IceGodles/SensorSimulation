@@ -44,6 +44,8 @@ FSimulationRuntimeSettingsSnapshot FSimulationRuntimeSettingsSnapshot::Capture(
     Snapshot.SimulationMode = Settings.SimulationMode;
     Snapshot.FixedStepSeconds = FMath::Max(0.001, Settings.FixedStepSeconds);
     Snapshot.MaxPendingFrames = FMath::Max(1, Settings.MaxPendingFrames);
+    Snapshot.MaxPendingAssemblyFrames = FMath::Max(1, Settings.MaxPendingAssemblyFrames);
+    Snapshot.TerminalFrameHistoryCapacity = FMath::Max(1, Settings.TerminalFrameHistoryCapacity);
     Snapshot.DatasetRoot = USimulationSettings::ResolveDatasetRoot(Settings.DatasetRoot);
     Snapshot.FrameTimeoutSeconds = FMath::Max(0.1, Settings.FrameTimeoutSeconds);
     Snapshot.RandomSeed = Settings.RandomSeed;

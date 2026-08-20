@@ -335,6 +335,7 @@ struct FExportService::FImpl : public FRunnable
     FString DatasetRoot;
     TQueue<FFramePacket, EQueueMode::Mpsc> Pending;
     TAtomic<int32> PendingCount { 0 };
+    TAtomic<int32> PeakPendingCount { 0 };
     TAtomic<bool> bRunning { false };
     TAtomic<bool> bShouldExit { false };
     /** Worker 在无任务时等待的事件，由 Enqueue 和 Stop 触发。 */
@@ -409,7 +410,12 @@ bool FExportService::Enqueue(FFramePacket&& Packet, EExportBackpressurePolicy Po
     }
 
     Impl->Pending.Enqueue(MoveTemp(Packet));
-    ++Impl->PendingCount;
+    const int32 NewPendingCount = ++Impl->PendingCount;
+    int32 ExpectedPeak = Impl->PeakPendingCount.Load();
+    while (NewPendingCount > ExpectedPeak &&
+        !Impl->PeakPendingCount.CompareExchange(ExpectedPeak, NewPendingCount))
+    {
+    }
     if (Impl->WorkEvent)
     {
         Impl->WorkEvent->Trigger();
@@ -420,6 +426,11 @@ bool FExportService::Enqueue(FFramePacket&& Packet, EExportBackpressurePolicy Po
 int32 FExportService::GetPendingCount() const
 {
     return Impl->PendingCount.Load();
+}
+
+int32 FExportService::GetPeakPendingCount() const
+{
+    return Impl->PeakPendingCount.Load();
 }
 
 bool FExportService::HasCapacity() const

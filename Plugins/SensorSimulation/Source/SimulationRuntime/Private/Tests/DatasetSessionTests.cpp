@@ -1,4 +1,5 @@
 #include "DatasetSession.h"
+#include "FrameAssembler.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -126,7 +127,17 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
     Session.RegisterRendererMetrics(Metrics);
 
     const FString SessionDirectory = Session.GetSessionDirectory();
-    Session.WriteMetadata(12, 10, 1, 1, 1, 0, 2, 3, 42, TEXT("DeterministicDataset"));
+    FFrameAssemblerStats FrameStats;
+    FrameStats.TotalFrames = 12;
+    FrameStats.CompletedFrames = 10;
+    FrameStats.FailedFrames = 1;
+    FrameStats.TimeoutFrames = 1;
+    FrameStats.BusyFrames = 1;
+    FrameStats.DuplicatePayloads = 2;
+    FrameStats.LatePayloads = 3;
+    FrameStats.PeakPendingFrames = 6;
+    FrameStats.CapacityRejectedFrames = 4;
+    Session.WriteMetadata(FrameStats, 7, 42, TEXT("DeterministicDataset"));
     Session.Stop();
 
     FString JsonText;
@@ -149,6 +160,12 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Busy frame count is written"), Statistics->GetIntegerField(TEXT("busy_frames")), 1);
     TestEqual(TEXT("Duplicate payload count is written"), Statistics->GetIntegerField(TEXT("duplicate_payloads")), 2);
     TestEqual(TEXT("Late payload count is written"), Statistics->GetIntegerField(TEXT("late_payloads")), 3);
+    TestEqual(TEXT("FrameAssembler peak is written"),
+        Statistics->GetIntegerField(TEXT("frame_assembler_peak_pending")), 6);
+    TestEqual(TEXT("Frame capacity rejection count is written"),
+        Statistics->GetIntegerField(TEXT("capacity_rejected_frames")), 4);
+    TestEqual(TEXT("Export queue peak is written"),
+        Statistics->GetIntegerField(TEXT("export_peak_pending")), 7);
 
     const TSharedPtr<FJsonObject> Renderer = RootObject->GetObjectField(TEXT("renderer"));
     const TArray<TSharedPtr<FJsonValue>>& Rigs = Renderer->GetArrayField(TEXT("camera_rigs"));

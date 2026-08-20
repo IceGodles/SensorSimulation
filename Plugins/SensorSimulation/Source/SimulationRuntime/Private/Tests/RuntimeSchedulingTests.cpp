@@ -58,6 +58,8 @@ bool FRuntimeSettingsSnapshotTest::RunTest(const FString& Parameters)
     Settings->SimulationMode = ESimulationMode::DeterministicDataset;
     Settings->FixedStepSeconds = 0.025;
     Settings->MaxPendingFrames = 5;
+    Settings->MaxPendingAssemblyFrames = 6;
+    Settings->TerminalFrameHistoryCapacity = 77;
     Settings->DatasetRoot.Path = TEXT("Automation/RuntimeSnapshot");
     Settings->FrameTimeoutSeconds = 3.5;
     Settings->RandomSeed = 1234;
@@ -74,6 +76,8 @@ bool FRuntimeSettingsSnapshotTest::RunTest(const FString& Parameters)
     Settings->SimulationMode = ESimulationMode::Realtime;
     Settings->FixedStepSeconds = 1.0;
     Settings->MaxPendingFrames = 99;
+    Settings->MaxPendingAssemblyFrames = 100;
+    Settings->TerminalFrameHistoryCapacity = 1000;
     Settings->DatasetRoot.Path = TEXT("ChangedDuringSession");
     Settings->FrameTimeoutSeconds = 99.0;
     Settings->RandomSeed = 9999;
@@ -82,6 +86,9 @@ bool FRuntimeSettingsSnapshotTest::RunTest(const FString& Parameters)
         Snapshot.SimulationMode, ESimulationMode::DeterministicDataset);
     TestEqual(TEXT("Snapshot keeps the original fixed step"), Snapshot.FixedStepSeconds, 0.025);
     TestEqual(TEXT("Snapshot keeps the original Export capacity"), Snapshot.MaxPendingFrames, 5);
+    TestEqual(TEXT("Snapshot keeps the original assembler capacity"), Snapshot.MaxPendingAssemblyFrames, 6);
+    TestEqual(TEXT("Snapshot keeps the original terminal history capacity"),
+        Snapshot.TerminalFrameHistoryCapacity, 77);
     TestEqual(TEXT("Snapshot keeps the original timeout"), Snapshot.FrameTimeoutSeconds, 3.5);
     TestEqual(TEXT("Snapshot keeps the original seed"), Snapshot.RandomSeed, 1234);
     TestTrue(TEXT("Snapshot root is unaffected by later Settings edits"),

@@ -23,6 +23,10 @@
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | FrameTimeoutSeconds | double | 2.0 | 帧等待模态到齐的超时时间 |
+| MaxPendingAssemblyFrames | int | 16 | FrameAssembler 同时驻留的同步帧上限；满载时新帧不会下发给传感器 |
+| TerminalFrameHistoryCapacity | int | 1024 | 已结束 FrameId 的有限历史容量，用于识别并统计迟到 Payload |
+
+建议令 `MaxPendingAssemblyFrames >= MaxPendingFrames`。Realtime 模式存在多个在途帧时可适当提高；DeterministicDataset 一次只推进一个同步帧，通常无需很大容量。`metadata.json/statistics` 中的 `frame_assembler_peak_pending`、`export_peak_pending` 和 `capacity_rejected_frames` 可作为调参依据。
 
 ### 确定性设置
 
