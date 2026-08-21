@@ -113,10 +113,21 @@ struct FExportService::FImpl : public FRunnable
     /** 将一帧数据写出到磁盘。 */
     void ExportFrame(const FFramePacket& Packet)
     {
-        const FString FrameDir = FString::Printf(
+        const FString FinalFrameDir = FString::Printf(
             TEXT("%s/frame_%06llu"), *DatasetRoot, Packet.Header.FrameId);
+        const FString FrameDir = FinalFrameDir + TEXT(".tmp");
 
-        IFileManager::Get().MakeDirectory(*FrameDir, true);
+        IFileManager& FileManager = IFileManager::Get();
+        FileManager.DeleteDirectory(*FrameDir, false, true);
+        if (FileManager.DirectoryExists(*FinalFrameDir)
+            || !FileManager.MakeDirectory(*FrameDir, true))
+        {
+            UE_LOG(LogTemp, Error,
+                TEXT("Cannot start frame export transaction: frame=%llu final='%s' temp='%s'."),
+                Packet.Header.FrameId, *FinalFrameDir, *FrameDir);
+            FailedFrameCount.Increment();
+            return;
+        }
 
         bool bSuccess = true;
 
@@ -161,15 +172,24 @@ struct FExportService::FImpl : public FRunnable
             bSuccess &= WriteLidarBin(FrameDir / (TEXT("lidar") + IdentitySuffix + TEXT(".bin")), Scan);
         }
 
-        // 写出 Ground Truth
-        if (Packet.Objects.Num() > 0)
-        {
-            bSuccess &= WriteGroundTruthJson(FrameDir / TEXT("groundtruth.json"),
-                Packet.Header, Packet.Objects);
-        }
+        // 即使场景中没有语义对象也写出合法空数组，避免“零对象”和“漏写”不可区分。
+        bSuccess &= WriteGroundTruthJson(FrameDir / TEXT("groundtruth.json"),
+            Packet.Header, Packet.Objects);
 
-        // 写出帧元数据
-        WriteFrameMetadataJson(FrameDir / TEXT("frame_info.json"), Packet);
+        // frame_info 最后写入；全部文件成功后才把临时目录原子提交为最终帧目录。
+        bSuccess &= WriteFrameMetadataJson(FrameDir / TEXT("frame_info.json"), Packet);
+        if (bSuccess)
+        {
+            bSuccess = FileManager.Move(
+                *FinalFrameDir, *FrameDir,
+                false, true, false, true);
+            if (!bSuccess)
+            {
+                UE_LOG(LogTemp, Error,
+                    TEXT("Failed to commit frame export transaction: frame=%llu temp='%s' final='%s'."),
+                    Packet.Header.FrameId, *FrameDir, *FinalFrameDir);
+            }
+        }
 
         if (bSuccess)
         {
@@ -223,11 +243,6 @@ struct FExportService::FImpl : public FRunnable
     /** 将 LiDAR 点云以 float32 x,y,z,intensity 格式写入 .bin 文件。 */
     static bool WriteLidarBin(const FString& FilePath, const FLidarScanPayload& Scan)
     {
-        if (Scan.Points.Num() == 0)
-        {
-            return true; // 空点云不算失败
-        }
-
         // 每个点 4 个 float32 = 16 字节
         TArray<uint8> Buffer;
         Buffer.SetNumUninitialized(Scan.Points.Num() * 16);
@@ -292,7 +307,7 @@ struct FExportService::FImpl : public FRunnable
     }
 
     /** 写出单帧的采集元数据。 */
-    static void WriteFrameMetadataJson(const FString& FilePath, const FFramePacket& Packet)
+    static bool WriteFrameMetadataJson(const FString& FilePath, const FFramePacket& Packet)
     {
         FString JsonStr;
         TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonStr);
@@ -321,13 +336,17 @@ struct FExportService::FImpl : public FRunnable
             Writer->WriteObjectStart();
             Writer->WriteValue(TEXT("sensor_guid"), Scan.SensorGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
             Writer->WriteValue(TEXT("sensor_name"), Scan.SensorName.ToString());
+            Writer->WriteValue(TEXT("expected_ray_count"), static_cast<int64>(Scan.ExpectedRayCount));
+            Writer->WriteValue(TEXT("completed_ray_count"), static_cast<int64>(Scan.CompletedRayCount));
+            Writer->WriteValue(TEXT("hit_count"), Scan.Points.Num());
+            Writer->WriteValue(TEXT("complete_revolution"), Scan.bCompleteRevolution);
             Writer->WriteObjectEnd();
         }
         Writer->WriteArrayEnd();
         Writer->WriteObjectEnd();
         Writer->Close();
 
-        FFileHelper::SaveStringToFile(JsonStr, *FilePath);
+        return FFileHelper::SaveStringToFile(JsonStr, *FilePath);
     }
 
     // -- 状态 --
@@ -343,6 +362,9 @@ struct FExportService::FImpl : public FRunnable
     FRunnableThread* WorkerThread = nullptr;
     FThreadSafeCounter ExportedFrameCount { 0 };
     FThreadSafeCounter FailedFrameCount { 0 };
+    FThreadSafeCounter EnqueuedFrameCount { 0 };
+    FThreadSafeCounter RejectedFrameCount { 0 };
+    FThreadSafeCounter DroppedFrameCount { 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -388,6 +410,7 @@ bool FExportService::Enqueue(FFramePacket&& Packet, EExportBackpressurePolicy Po
             UE_LOG(LogTemp, Warning,
                 TEXT("Export queue full (%d/%d), rejecting frame %llu"),
                 CurrentCount, Impl->Capacity, Packet.Header.FrameId);
+            Impl->RejectedFrameCount.Increment();
             return false;
 
         case EExportBackpressurePolicy::DropOldest:
@@ -396,6 +419,7 @@ bool FExportService::Enqueue(FFramePacket&& Packet, EExportBackpressurePolicy Po
                 if (Impl->Pending.Dequeue(Dropped))
                 {
                     --Impl->PendingCount;
+                    Impl->DroppedFrameCount.Increment();
                     UE_LOG(LogTemp, Warning,
                         TEXT("Export queue full, dropped frame %llu to make room for %llu"),
                         Dropped.Header.FrameId, Packet.Header.FrameId);
@@ -405,11 +429,13 @@ bool FExportService::Enqueue(FFramePacket&& Packet, EExportBackpressurePolicy Po
 
         case EExportBackpressurePolicy::PauseDatasetClock:
             // 非阻塞返回；Subsystem 保留完整帧并显式暂停确定性调度器。
+            Impl->RejectedFrameCount.Increment();
             return false;
         }
     }
 
     Impl->Pending.Enqueue(MoveTemp(Packet));
+    Impl->EnqueuedFrameCount.Increment();
     const int32 NewPendingCount = ++Impl->PendingCount;
     int32 ExpectedPeak = Impl->PeakPendingCount.Load();
     while (NewPendingCount > ExpectedPeak &&
@@ -446,4 +472,16 @@ int64 FExportService::GetExportedFrameCount() const
 int64 FExportService::GetFailedFrameCount() const
 {
     return Impl->FailedFrameCount.GetValue();
+}
+
+FExportServiceStats FExportService::GetStats() const
+{
+    FExportServiceStats Stats;
+    Stats.EnqueuedFrames = Impl->EnqueuedFrameCount.GetValue();
+    Stats.RejectedFrames = Impl->RejectedFrameCount.GetValue();
+    Stats.DroppedFrames = Impl->DroppedFrameCount.GetValue();
+    Stats.CommittedFrames = Impl->ExportedFrameCount.GetValue();
+    Stats.FailedFrames = Impl->FailedFrameCount.GetValue();
+    Stats.PeakPendingFrames = Impl->PeakPendingCount.Load();
+    return Stats;
 }

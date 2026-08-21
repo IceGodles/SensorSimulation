@@ -8,6 +8,14 @@ EXPECTED_LABELS = {
     "A_Semantic_020",
     "A_Semantic_100",
     "A_Semantic_200",
+    "A_Depth_0550",
+    "A_Depth_0950",
+    "A_Depth_1450",
+    "A_AcceptanceRoad",
+    "A_AcceptanceBackWall",
+    "A_AcceptanceLeftWall",
+    "A_AcceptanceRightWall",
+    "A_AcceptanceHISM",
 }
 
 
@@ -30,5 +38,18 @@ for actor in actor_subsystem.get_all_level_actors():
 missing = sorted(EXPECTED_LABELS - set(found))
 if missing:
     raise RuntimeError(f"Missing acceptance actors: {missing}")
+
+camera_components = set(found["A_AcceptanceCamera"])
+required_camera_components = {
+    "CameraRigComponent",
+    "SimCameraSensorComponent",
+    "SimLidarSensorComponent",
+}
+missing_components = sorted(required_camera_components - camera_components)
+if missing_components:
+    raise RuntimeError(f"Acceptance camera is missing components: {missing_components}")
+
+if "HierarchicalInstancedStaticMeshComponent" not in found["A_AcceptanceHISM"]:
+    raise RuntimeError("A_AcceptanceHISM has no HISM component")
 
 log("SUCCESS: all acceptance actors and components are present")

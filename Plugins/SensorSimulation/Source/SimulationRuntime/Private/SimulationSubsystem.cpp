@@ -8,6 +8,18 @@
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 
+bool USimulationSubsystem::ShouldCreateSubsystem(UObject* Outer) const
+{
+    const UWorld* World = Cast<UWorld>(Outer);
+    if (!World)
+    {
+        return false;
+    }
+    return World->WorldType == EWorldType::Game
+        || World->WorldType == EWorldType::PIE
+        || World->WorldType == EWorldType::GamePreview;
+}
+
 /** 初始化世界级传感器仿真子系统。 */
 void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -57,7 +69,7 @@ void USimulationSubsystem::Deinitialize()
 
         DatasetSession->WriteMetadata(
             Stats,
-            ExportService ? ExportService->GetPeakPendingCount() : 0,
+            ExportService ? ExportService->GetStats() : FExportServiceStats{},
             SettingsSnapshot.RandomSeed, Mode);
         DatasetSession->Stop();
     }
@@ -65,6 +77,7 @@ void USimulationSubsystem::Deinitialize()
     ExportService.Reset();
     DatasetSession.Reset();
     Sensors.Reset();
+    CapturePlanner.Reset();
     SemanticRegistry.Reset();
     Super::Deinitialize();
 }
@@ -139,6 +152,7 @@ void USimulationSubsystem::RegisterSensor(USimSensorComponentBase& Sensor)
 void USimulationSubsystem::UnregisterSensor(const USimSensorComponentBase& Sensor)
 {
     Sensors.RemoveAll([&Sensor](const TWeakObjectPtr<USimSensorComponentBase>& Item) { return Item.Get() == &Sensor; });
+    CapturePlanner.Remove(Sensor.SensorGuid);
 }
 
 /** 将语义组件注册到实例编号注册表。 */
@@ -201,12 +215,16 @@ void USimulationSubsystem::RequestFrame(
     Header.FrameId = NextFrameId++;
     Header.SimulationTimestampSeconds = TimestampSeconds;
 
-    // 先声明整帧预期模态，聚合器据此判断异步返回的数据何时全部到齐。
+    // Capture Plan 只包含本主时钟步真正到期的传感器。全局时间轴与各传感器频率解耦，
+    // 未到期传感器不会成为本帧预期项，也不会制造 Busy 失败。
+    TArray<TWeakObjectPtr<USimSensorComponentBase>> DueSensors;
     EPayloadType Expected = EPayloadType::GroundTruth;
     for (const TWeakObjectPtr<USimSensorComponentBase>& Sensor : Sensors)
     {
-        if (Sensor.IsValid() && Sensor->bSensorEnabled)
+        if (Sensor.IsValid() && Sensor->bSensorEnabled
+            && CapturePlanner.IsDue(Sensor->SensorGuid, TimestampSeconds))
         {
+            DueSensors.Add(Sensor);
             Expected |= Sensor->GetPayloadTypes();
         }
     }
@@ -217,7 +235,7 @@ void USimulationSubsystem::RequestFrame(
     }
     FrameAssembler.AddGroundTruth(Header.FrameId, CaptureGroundTruth());
 
-    for (const TWeakObjectPtr<USimSensorComponentBase>& Sensor : Sensors)
+    for (const TWeakObjectPtr<USimSensorComponentBase>& Sensor : DueSensors)
     {
         if (!Sensor.IsValid() || !Sensor->bSensorEnabled)
         {
@@ -239,6 +257,7 @@ void USimulationSubsystem::RequestFrame(
         Request.ExpectedPayloads = SensorPayloads;
         Request.ExpectedImageChannels = ExpectedImageChannels;
         const ECaptureRequestResult Result = Sensor->RequestCapture(Request);
+        CapturePlanner.MarkAttempt(Sensor->SensorGuid, Sensor->UpdateFrequencyHz, TimestampSeconds);
         if (Result != ECaptureRequestResult::Accepted)
         {
             FrameAssembler.FailFrame(

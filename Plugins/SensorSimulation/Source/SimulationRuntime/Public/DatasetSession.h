@@ -5,6 +5,7 @@
 #include "CameraRigComponent.h"
 
 struct FFrameAssemblerStats;
+struct FExportServiceStats;
 
 /** 数据集采集会话的运行时状态。 */
 enum class ESessionState : uint8
@@ -58,7 +59,7 @@ public:
 
     /** 写入 metadata.json，包含会话配置、帧终态和异常 Payload 统计。 */
     void WriteMetadata(const FFrameAssemblerStats& FrameStats,
-                       int32 ExportPeakPending,
+                       const FExportServiceStats& ExportStats,
                        int32 Seed, const FString& Mode);
 
 private:

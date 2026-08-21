@@ -1,5 +1,6 @@
 #include "DatasetSession.h"
 #include "FrameAssembler.h"
+#include "ExportService.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "Misc/Guid.h"
@@ -128,7 +129,7 @@ void FDatasetSession::RegisterRendererMetrics(const FCameraRendererMetricsSnapsh
 /** 写入 metadata.json。 */
 void FDatasetSession::WriteMetadata(
     const FFrameAssemblerStats& FrameStats,
-    const int32 ExportPeakPending,
+    const FExportServiceStats& ExportStats,
     const int32 Seed,
     const FString& Mode)
 {
@@ -158,7 +159,12 @@ void FDatasetSession::WriteMetadata(
     Writer->WriteValue(TEXT("duplicate_payloads"), FrameStats.DuplicatePayloads);
     Writer->WriteValue(TEXT("late_payloads"), FrameStats.LatePayloads);
     Writer->WriteValue(TEXT("frame_assembler_peak_pending"), FrameStats.PeakPendingFrames);
-    Writer->WriteValue(TEXT("export_peak_pending"), ExportPeakPending);
+    Writer->WriteValue(TEXT("export_enqueued_frames"), ExportStats.EnqueuedFrames);
+    Writer->WriteValue(TEXT("export_rejected_frames"), ExportStats.RejectedFrames);
+    Writer->WriteValue(TEXT("export_dropped_frames"), ExportStats.DroppedFrames);
+    Writer->WriteValue(TEXT("export_committed_frames"), ExportStats.CommittedFrames);
+    Writer->WriteValue(TEXT("export_failed_frames"), ExportStats.FailedFrames);
+    Writer->WriteValue(TEXT("export_peak_pending"), ExportStats.PeakPendingFrames);
     Writer->WriteObjectEnd();
 
     // Renderer 指标以最终/最近快照写入会话，便于离线判断背压、资源重建和特定模态延迟。

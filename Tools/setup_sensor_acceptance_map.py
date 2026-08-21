@@ -9,8 +9,19 @@ SEMANTIC_OBJECTS = (
     ("A_Semantic_020", 20, unreal.Vector(0.0, -75.0, 50.0), "M_Acceptance_Green", unreal.LinearColor(0.0, 1.0, 0.0, 1.0)),
     ("A_Semantic_100", 100, unreal.Vector(0.0, 75.0, 50.0), "M_Acceptance_Blue", unreal.LinearColor(0.0, 0.0, 1.0, 1.0)),
     ("A_Semantic_200", 200, unreal.Vector(0.0, 225.0, 50.0), "M_Acceptance_White", unreal.LinearColor(1.0, 1.0, 1.0, 1.0)),
+    # 已知距离目标的中心距相机分别为 6m/10m/15m；立方体前表面距离再减 0.5m。
+    ("A_Depth_0550", 30, unreal.Vector(0.0, 450.0, 50.0), "M_Acceptance_White", unreal.LinearColor(1.0, 1.0, 1.0, 1.0)),
+    ("A_Depth_0950", 40, unreal.Vector(400.0, -450.0, 50.0), "M_Acceptance_White", unreal.LinearColor(1.0, 1.0, 1.0, 1.0)),
+    ("A_Depth_1450", 50, unreal.Vector(900.0, 350.0, 50.0), "M_Acceptance_White", unreal.LinearColor(1.0, 1.0, 1.0, 1.0)),
 )
 MATERIAL_PATH = "/Game/Acceptance/Materials"
+ENVIRONMENT_LABELS = {
+    "A_AcceptanceRoad",
+    "A_AcceptanceBackWall",
+    "A_AcceptanceLeftWall",
+    "A_AcceptanceRightWall",
+    "A_AcceptanceHISM",
+}
 
 
 def log(message):
@@ -49,7 +60,7 @@ def add_component(actor, component_class, component_name):
 
 
 def remove_previous_fixture(actor_subsystem):
-    labels = {CAMERA_LABEL, *(entry[0] for entry in SEMANTIC_OBJECTS)}
+    labels = {CAMERA_LABEL, *ENVIRONMENT_LABELS, *(entry[0] for entry in SEMANTIC_OBJECTS)}
     for actor in actor_subsystem.get_all_level_actors():
         if actor.get_actor_label() in labels:
             actor_subsystem.destroy_actor(actor)
@@ -83,9 +94,14 @@ def create_camera(actor_subsystem):
         unreal.load_class(None, "/Script/SimulationRuntime.SimCameraSensorComponent"),
         "SimCameraSensorComponent class was not found",
     )
+    lidar_class = require(
+        unreal.load_class(None, "/Script/SimulationRuntime.SimLidarSensorComponent"),
+        "SimLidarSensorComponent class was not found",
+    )
 
     rig = add_component(camera_actor, rig_class, "CameraRig")
     add_component(camera_actor, sensor_class, "SimCameraSensor")
+    lidar = add_component(camera_actor, lidar_class, "SimLidarSensor")
 
     rig.set_editor_property("sensor_name", "FrontCamera")
     rig.set_editor_property("horizontal_fov_degrees", 90.0)
@@ -96,9 +112,21 @@ def create_camera(actor_subsystem):
             make_channel(unreal.CameraChannelType.RGB, False),
             make_channel(unreal.CameraChannelType.SEMANTIC, True),
             make_channel(unreal.CameraChannelType.DEPTH, True),
+            make_channel(unreal.CameraChannelType.INSTANCE, True),
         ],
     )
-    log("Created A_AcceptanceCamera with RGB, Semantic, and Depth channels")
+    lidar.set_editor_property("sensor_name", "TopLidar")
+    lidar.set_editor_property("update_frequency_hz", 10.0)
+    lidar_config = lidar.get_editor_property("config")
+    lidar_config.set_editor_property("channels", 16)
+    lidar_config.set_editor_property("horizontal_samples", 512)
+    lidar_config.set_editor_property("vertical_fov_upper_degrees", 10.0)
+    lidar_config.set_editor_property("vertical_fov_lower_degrees", -10.0)
+    lidar_config.set_editor_property("min_range_meters", 0.5)
+    lidar_config.set_editor_property("max_range_meters", 100.0)
+    lidar_config.set_editor_property("rays_per_tick", 2048)
+    lidar.set_editor_property("config", lidar_config)
+    log("Created A_AcceptanceCamera with RGB, Semantic, Depth, Instance, and 16x512 LiDAR")
 
 
 def create_color_material(asset_name, color):
@@ -161,7 +189,95 @@ def create_semantic_objects(actor_subsystem):
         semantic = add_component(actor, semantic_class, "SemanticObject")
         semantic.set_editor_property("semantic_id", semantic_id)
         semantic.set_editor_property("render_to_semantic_capture", True)
+        semantic.set_editor_property("render_to_instance_capture", True)
         log(f"Created {label} with SemanticId={semantic_id}")
+
+
+def create_labeled_cube(actor_subsystem, label, semantic_id, location, scale, material):
+    semantic_class = require(
+        unreal.load_class(None, "/Script/SimulationRuntime.SemanticObjectComponent"),
+        "SemanticObjectComponent class was not found",
+    )
+    cube_mesh = require(unreal.load_asset("/Engine/BasicShapes/Cube.Cube"), "Engine cube mesh was not found")
+    actor = actor_subsystem.spawn_actor_from_class(
+        unreal.StaticMeshActor, location, unreal.Rotator(0.0, 0.0, 0.0), False
+    )
+    require(actor, f"Failed to spawn {label}")
+    actor.set_actor_label(label)
+    actor.set_actor_scale3d(scale)
+    mesh = actor.get_editor_property("static_mesh_component")
+    mesh.set_static_mesh(cube_mesh)
+    mesh.set_material(0, material)
+    mesh.set_render_custom_depth(True)
+    mesh.set_custom_depth_stencil_value(semantic_id)
+    semantic = add_component(actor, semantic_class, "SemanticObject")
+    semantic.set_editor_property("semantic_id", semantic_id)
+    semantic.set_editor_property("render_to_semantic_capture", True)
+    semantic.set_editor_property("render_to_instance_capture", True)
+    log(f"Created environment actor {label} with SemanticId={semantic_id}")
+    return actor
+
+
+def create_environment(actor_subsystem):
+    road_material = create_color_material(
+        "M_Acceptance_Road", unreal.LinearColor(0.08, 0.08, 0.08, 1.0)
+    )
+    wall_material = create_color_material(
+        "M_Acceptance_Wall", unreal.LinearColor(0.35, 0.35, 0.35, 1.0)
+    )
+    create_labeled_cube(
+        actor_subsystem, "A_AcceptanceRoad", 1,
+        unreal.Vector(650.0, 0.0, -10.0), unreal.Vector(13.0, 12.0, 0.1), road_material
+    )
+    create_labeled_cube(
+        actor_subsystem, "A_AcceptanceBackWall", 5,
+        unreal.Vector(1900.0, 0.0, 300.0), unreal.Vector(0.1, 12.0, 3.0), wall_material
+    )
+    create_labeled_cube(
+        actor_subsystem, "A_AcceptanceLeftWall", 5,
+        unreal.Vector(650.0, -1200.0, 150.0), unreal.Vector(13.0, 0.1, 1.5), wall_material
+    )
+    create_labeled_cube(
+        actor_subsystem, "A_AcceptanceRightWall", 5,
+        unreal.Vector(650.0, 1200.0, 150.0), unreal.Vector(13.0, 0.1, 1.5), wall_material
+    )
+
+
+def create_hism_fixture(actor_subsystem):
+    semantic_class = require(
+        unreal.load_class(None, "/Script/SimulationRuntime.SemanticObjectComponent"),
+        "SemanticObjectComponent class was not found",
+    )
+    hism_class = require(
+        unreal.load_class(None, "/Script/Engine.HierarchicalInstancedStaticMeshComponent"),
+        "HISM component class was not found",
+    )
+    cube_mesh = require(unreal.load_asset("/Engine/BasicShapes/Cube.Cube"), "Engine cube mesh was not found")
+    material = create_color_material(
+        "M_Acceptance_HISM", unreal.LinearColor(1.0, 0.5, 0.0, 1.0)
+    )
+    actor = actor_subsystem.spawn_actor_from_class(
+        unreal.Actor, unreal.Vector(0.0, 0.0, 0.0), unreal.Rotator(0.0, 0.0, 0.0), False
+    )
+    require(actor, "Failed to spawn HISM fixture")
+    actor.set_actor_label("A_AcceptanceHISM")
+    hism = add_component(actor, hism_class, "HISMObstacles")
+    hism.set_static_mesh(cube_mesh)
+    hism.set_material(0, material)
+    hism.set_render_custom_depth(True)
+    hism.set_custom_depth_stencil_value(70)
+    for y in (-850.0, -700.0, -550.0):
+        transform = unreal.Transform(
+            location=unreal.Vector(650.0, y, 50.0),
+            rotation=unreal.Rotator(0.0, 0.0, 0.0),
+            scale=unreal.Vector(0.5, 0.5, 1.0),
+        )
+        hism.add_instance(transform, False)
+    semantic = add_component(actor, semantic_class, "SemanticObject")
+    semantic.set_editor_property("semantic_id", 70)
+    semantic.set_editor_property("render_to_semantic_capture", True)
+    semantic.set_editor_property("render_to_instance_capture", True)
+    log("Created A_AcceptanceHISM with three internal instances")
 
 
 def main():
@@ -170,6 +286,8 @@ def main():
     remove_previous_fixture(actor_subsystem)
     create_camera(actor_subsystem)
     create_semantic_objects(actor_subsystem)
+    create_environment(actor_subsystem)
+    create_hism_fixture(actor_subsystem)
     require(unreal.EditorLevelLibrary.save_current_level(), "Failed to save acceptance level")
     log("SUCCESS: acceptance fixture saved")
 

@@ -99,14 +99,61 @@ bool FExportServiceLifecycleTest::RunTest(const FString& Parameters)
         TEXT("A complete frame is accepted after restart"),
         Service.Enqueue(MoveTemp(SecondPacket), EExportBackpressurePolicy::RejectNewest));
 
+    FFramePacket EmptyLidarPacket;
+    EmptyLidarPacket.Header.FrameId = 3;
+    EmptyLidarPacket.Header.SequenceId = 7;
+    EmptyLidarPacket.ExpectedPayloads = EPayloadType::Lidar;
+    EmptyLidarPacket.CompletedPayloads = EPayloadType::Lidar;
+    FLidarScanPayload& EmptyScan = EmptyLidarPacket.LidarScans.AddDefaulted_GetRef();
+    EmptyScan.Header = EmptyLidarPacket.Header;
+    EmptyScan.SensorGuid = FGuid(11, 22, 33, 44);
+    EmptyScan.SensorName = TEXT("EmptyLidar");
+    EmptyScan.ExpectedRayCount = 32;
+    EmptyScan.CompletedRayCount = 32;
+    EmptyScan.bCompleteRevolution = true;
+    TestTrue(TEXT("A zero-hit LiDAR frame is accepted"),
+        Service.Enqueue(MoveTemp(EmptyLidarPacket), EExportBackpressurePolicy::RejectNewest));
+
     Service.Stop();
     Service.Stop();
     TestEqual(TEXT("Repeated final Stop is idempotent"), Service.GetPendingCount(), 0);
-    TestEqual(TEXT("Both sessions exported their frames"), Service.GetExportedFrameCount(), int64{2});
+    TestEqual(TEXT("Both sessions exported all three frames"), Service.GetExportedFrameCount(), int64{3});
     TestEqual(TEXT("No frame failed during lifecycle transitions"), Service.GetFailedFrameCount(), int64{0});
     TestTrue(
         TEXT("The restarted worker wrote the second frame"),
         IFileManager::Get().FileExists(*(OutputRoot / TEXT("frame_000002") / TEXT("frame_info.json"))));
+    const FString EmptyLidarPath = OutputRoot / TEXT("frame_000003") / TEXT("lidar.bin");
+    TestTrue(TEXT("Zero-hit LiDAR still creates lidar.bin"),
+        IFileManager::Get().FileExists(*EmptyLidarPath));
+    TestEqual(TEXT("Zero-hit lidar.bin is exactly empty"),
+        IFileManager::Get().FileSize(*EmptyLidarPath), int64{0});
+    TestFalse(TEXT("Committed frames leave no temporary directory"),
+        IFileManager::Get().DirectoryExists(*(OutputRoot / TEXT("frame_000003.tmp"))));
+
+    // 任一 Writer 失败时不得暴露最终 frame 目录；临时目录保留为可诊断状态。
+    TestTrue(TEXT("Export worker starts for atomic failure injection"), Service.Start(OutputRoot));
+    FFramePacket InvalidPacket;
+    InvalidPacket.Header.FrameId = 4;
+    InvalidPacket.ExpectedPayloads = EPayloadType::Rgb;
+    InvalidPacket.CompletedPayloads = EPayloadType::Rgb;
+    FImagePayload& InvalidImage = InvalidPacket.Images.AddDefaulted_GetRef();
+    InvalidImage.PayloadType = EPayloadType::Rgb;
+    InvalidImage.ImageSize = FIntPoint(1, 1);
+    InvalidImage.Bytes = { 255, 0, 0, 255 };
+    AddExpectedError(TEXT("Cannot export image without ChannelGuid"),
+        EAutomationExpectedErrorFlags::Contains, 1);
+    TestTrue(TEXT("Complete invalid frame reaches Writer fault injection"),
+        Service.Enqueue(MoveTemp(InvalidPacket), EExportBackpressurePolicy::RejectNewest));
+    Service.Stop();
+    TestFalse(TEXT("Failed transaction never exposes a final frame directory"),
+        IFileManager::Get().DirectoryExists(*(OutputRoot / TEXT("frame_000004"))));
+    TestTrue(TEXT("Failed transaction remains explicitly marked as temporary"),
+        IFileManager::Get().DirectoryExists(*(OutputRoot / TEXT("frame_000004.tmp"))));
+    TestEqual(TEXT("Writer failure is counted"), Service.GetFailedFrameCount(), int64{1});
+
+    const FExportServiceStats ExportStats = Service.GetStats();
+    TestEqual(TEXT("Committed count equals final frame count"), ExportStats.CommittedFrames, int64{3});
+    TestEqual(TEXT("All accepted frames are counted as enqueued"), ExportStats.EnqueuedFrames, int64{4});
 
     return true;
 }

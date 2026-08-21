@@ -8,7 +8,7 @@ from PIL import Image
 
 image_path = Path(sys.argv[1])
 report_path = Path(sys.argv[2])
-expected_ids = {0, 10, 20, 100, 200}
+expected_ids = {0, 1, 5, 10, 20, 30, 40, 50, 70, 100, 200}
 
 image = Image.open(image_path).convert("RGBA")
 pixels = list(image.getdata())

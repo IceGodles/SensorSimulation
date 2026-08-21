@@ -1,11 +1,78 @@
 #include "SimulationScheduler.h"
 #include "SimulationSettings.h"
 #include "FrameAssembler.h"
+#include "SensorCapturePlanner.h"
+#include "SimulationSubsystem.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
 #include "Misc/Paths.h"
+#include "Engine/World.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMixedSensorRateCapturePlannerTest,
+    "SensorSimulation.Runtime.Scheduling.MixedSensorRates",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMixedSensorRateCapturePlannerTest::RunTest(const FString& Parameters)
+{
+    FSensorCapturePlanner Planner;
+    const FGuid CameraGuid(1, 2, 3, 4);
+    const FGuid LidarGuid(5, 6, 7, 8);
+    int32 CameraCaptures = 0;
+    int32 LidarCaptures = 0;
+
+    // 20 Hz 主时钟运行 1 秒；Camera=20 Hz，LiDAR=10 Hz，首次主步两者都立即采样。
+    for (int32 Step = 1; Step <= 20; ++Step)
+    {
+        const double Timestamp = Step * 0.05;
+        if (Planner.IsDue(CameraGuid, Timestamp))
+        {
+            ++CameraCaptures;
+            Planner.MarkAttempt(CameraGuid, 20.0f, Timestamp);
+        }
+        if (Planner.IsDue(LidarGuid, Timestamp))
+        {
+            ++LidarCaptures;
+            Planner.MarkAttempt(LidarGuid, 10.0f, Timestamp);
+        }
+    }
+
+    TestEqual(TEXT("20 Hz camera participates in every master step"), CameraCaptures, 20);
+    TestEqual(TEXT("10 Hz LiDAR participates in every second master step"), LidarCaptures, 10);
+
+    // 大幅跨过若干周期后只允许一次到期，不追赶制造请求风暴。
+    TestTrue(TEXT("A delayed sensor is due once"), Planner.IsDue(LidarGuid, 5.0));
+    Planner.MarkAttempt(LidarGuid, 10.0f, 5.0);
+    TestFalse(TEXT("A delayed sensor advances beyond the current timestamp"), Planner.IsDue(LidarGuid, 5.0));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FSimulationWorldEligibilityTest,
+    "SensorSimulation.Runtime.Session.WorldEligibility",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSimulationWorldEligibilityTest::RunTest(const FString& Parameters)
+{
+    const USimulationSubsystem* Subsystem = GetDefault<USimulationSubsystem>();
+    UWorld* World = NewObject<UWorld>();
+
+    World->WorldType = EWorldType::Editor;
+    TestFalse(TEXT("Editor asset world does not create a dataset session"),
+        Subsystem->ShouldCreateSubsystem(World));
+    World->WorldType = EWorldType::EditorPreview;
+    TestFalse(TEXT("Editor preview world does not create a dataset session"),
+        Subsystem->ShouldCreateSubsystem(World));
+    World->WorldType = EWorldType::Game;
+    TestTrue(TEXT("Game world creates the simulation subsystem"),
+        Subsystem->ShouldCreateSubsystem(World));
+    World->WorldType = EWorldType::PIE;
+    TestTrue(TEXT("PIE world creates the simulation subsystem"),
+        Subsystem->ShouldCreateSubsystem(World));
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FDeterministicSimulationSchedulerTest,

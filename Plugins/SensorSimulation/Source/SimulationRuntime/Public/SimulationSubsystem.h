@@ -7,6 +7,7 @@
 #include "DatasetSession.h"
 #include "SimulationScheduler.h"
 #include "SimulationSettings.h"
+#include "SensorCapturePlanner.h"
 #include "SimulationSubsystem.generated.h"
 
 class USemanticObjectComponent;
@@ -19,6 +20,8 @@ class SIMULATIONRUNTIME_API USimulationSubsystem : public UTickableWorldSubsyste
     GENERATED_BODY()
 
 public:
+    /** 仅在真正运行采集的 Game/PIE World 中创建，避免编辑器加载资产时产生空会话。 */
+    virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 /** 初始化世界级传感器仿真子系统。 */
     virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 /** 清空传感器和语义状态后反初始化子系统。 */
@@ -53,6 +56,8 @@ public:
 private:
     /** 当前世界内已注册传感器的弱引用集合。 */
     TArray<TWeakObjectPtr<USimSensorComponentBase>> Sensors;
+    /** 根据稳定 SensorGuid 为混合频率传感器生成逐帧 Capture Plan。 */
+    FSensorCapturePlanner CapturePlanner;
     /** 当前世界的语义对象实例编号注册表。 */
     FSemanticRegistry SemanticRegistry;
     /** 负责把异步传感器结果合并为同步帧的聚合器。 */

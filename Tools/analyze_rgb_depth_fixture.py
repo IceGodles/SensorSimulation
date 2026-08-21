@@ -40,8 +40,18 @@ import cv2  # noqa: E402
 
 depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
 if depth is None:
-    raise RuntimeError(f"Failed to read {depth_path}")
-if depth.ndim == 3:
+    # 某些 OpenCV wheel 未启用 OpenEXR codec；回退到 OpenEXR 官方绑定。
+    import OpenEXR
+
+    exr_channels = OpenEXR.File(str(depth_path)).channels()
+    depth = exr_channels.get("RGBA")
+    if depth is not None:
+        depth = depth.pixels
+        depth_values = depth[:, :, 0]
+    else:
+        depth = exr_channels["R"].pixels
+        depth_values = depth
+elif depth.ndim == 3:
     # OpenCV 按 BGRA 返回 EXR；SCS_SceneDepth 写入的逻辑 R 因而位于数组索引 2。
     depth_values = depth[:, :, 2]
 else:

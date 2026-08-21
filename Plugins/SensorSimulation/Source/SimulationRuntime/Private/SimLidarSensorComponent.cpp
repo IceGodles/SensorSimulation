@@ -1,6 +1,7 @@
 #include "SimLidarSensorComponent.h"
 #include "SemanticObjectComponent.h"
 #include "SimulationSubsystem.h"
+#include "CoordinateConverter.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 
@@ -97,7 +98,9 @@ void USimLidarSensorComponent::TraceBatch()
         {
             FLidarPoint& Point = ActiveScan.Points.AddDefaulted_GetRef();
             const FVector SensorLocalCm = SensorTransform.InverseTransformPosition(Hit.ImpactPoint);
-            Point.PositionMeters = FVector3f(SensorLocalCm / 100.0f);
+            // 正式数据集声明为右手 FLU（前、左、上）米制；不能直接输出 UE 的前、右、上局部坐标。
+            Point.PositionMeters = FVector3f(
+                FCoordinateConverter::UnrealCentimetersToFrontLeftUpMeters(SensorLocalCm));
             // 以入射方向和表面法线夹角的余弦近似回波强度，正入射最强、掠射最弱。
             Point.Intensity = FMath::Clamp(FVector::DotProduct(-WorldDirection, Hit.ImpactNormal), 0.0f, 1.0f);
             Point.RelativeTimeSeconds = LocalRayDirections.Num() > 1

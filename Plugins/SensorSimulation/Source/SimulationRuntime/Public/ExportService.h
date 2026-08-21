@@ -16,6 +16,17 @@ enum class EExportBackpressurePolicy : uint8
     BlockDatasetClock = PauseDatasetClock
 };
 
+/** Export Queue 到最终磁盘提交的分层统计；Committed 才等于可消费的 frame 目录。 */
+struct SIMULATIONRUNTIME_API FExportServiceStats
+{
+    int64 EnqueuedFrames = 0;
+    int64 RejectedFrames = 0;
+    int64 DroppedFrames = 0;
+    int64 CommittedFrames = 0;
+    int64 FailedFrames = 0;
+    int32 PeakPendingFrames = 0;
+};
+
 /** 接收完整帧并异步导出数据集的有界队列服务。 */
 class SIMULATIONRUNTIME_API FExportService
 {
@@ -41,6 +52,8 @@ public:
     int64 GetExportedFrameCount() const;
 /** 返回 Worker 写入失败的帧数量。 */
     int64 GetFailedFrameCount() const;
+    /** 返回 Queue、Writer 和最终提交的完整统计快照。 */
+    FExportServiceStats GetStats() const;
 
 private:
     struct FImpl;

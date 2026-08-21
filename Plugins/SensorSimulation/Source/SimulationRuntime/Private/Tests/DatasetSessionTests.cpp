@@ -1,5 +1,6 @@
 #include "DatasetSession.h"
 #include "FrameAssembler.h"
+#include "ExportService.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -137,7 +138,14 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
     FrameStats.LatePayloads = 3;
     FrameStats.PeakPendingFrames = 6;
     FrameStats.CapacityRejectedFrames = 4;
-    Session.WriteMetadata(FrameStats, 7, 42, TEXT("DeterministicDataset"));
+    FExportServiceStats ExportStats;
+    ExportStats.EnqueuedFrames = 11;
+    ExportStats.RejectedFrames = 2;
+    ExportStats.DroppedFrames = 1;
+    ExportStats.CommittedFrames = 9;
+    ExportStats.FailedFrames = 1;
+    ExportStats.PeakPendingFrames = 7;
+    Session.WriteMetadata(FrameStats, ExportStats, 42, TEXT("DeterministicDataset"));
     Session.Stop();
 
     FString JsonText;
@@ -166,6 +174,10 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
         Statistics->GetIntegerField(TEXT("capacity_rejected_frames")), 4);
     TestEqual(TEXT("Export queue peak is written"),
         Statistics->GetIntegerField(TEXT("export_peak_pending")), 7);
+    TestEqual(TEXT("Export committed count is written"),
+        Statistics->GetIntegerField(TEXT("export_committed_frames")), 9);
+    TestEqual(TEXT("Export rejected count is written"),
+        Statistics->GetIntegerField(TEXT("export_rejected_frames")), 2);
 
     const TSharedPtr<FJsonObject> Renderer = RootObject->GetObjectField(TEXT("renderer"));
     const TArray<TSharedPtr<FJsonValue>>& Rigs = Renderer->GetArrayField(TEXT("camera_rigs"));

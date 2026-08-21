@@ -5,9 +5,7 @@ import unreal
 
 MAP_PATH = "/Game/Acceptance/Maps/L_SensorAcceptance"
 CAMERA_LABEL = "A_AcceptanceCamera"
-OUTPUT_DIR = Path(
-    r"D:\ueprojects\SensorSimulationHost\Saved\Acceptance\RendererOwner_20260723\05_RgbDepthFixture"
-)
+OUTPUT_DIR = Path(unreal.Paths.project_saved_dir()) / "Acceptance" / "RgbDepthFixture"
 
 
 def require(value, message):
