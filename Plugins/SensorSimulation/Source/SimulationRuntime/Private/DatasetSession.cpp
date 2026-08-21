@@ -73,6 +73,9 @@ bool FDatasetSession::Start(const FString& BaseRoot, const FString& SessionName)
     Calibrations.Reset();
     LidarCalibrations.Reset();
     RendererMetrics.Reset();
+    SemanticTaxonomyAsset.Reset();
+    SemanticTaxonomyVersion.Reset();
+    SemanticTaxonomyEntries.Reset();
 
     UE_LOG(LogTemp, Log, TEXT("DatasetSession started: %s -> %s"), *SessionId, *SessionDirectory);
     return true;
@@ -97,6 +100,10 @@ bool FDatasetSession::Stop()
 
     // COMPLETED 是会话唯一的可消费标志；metadata 或 calibration 任一失败都不得生成。
     bSuccess = bSuccess && bMetadataWritten && bConsistencyPassed;
+    if (bSuccess)
+    {
+        bSuccess = WriteManifestJsonLines();
+    }
     if (bSuccess)
     {
         bSuccess = WriteTextFileAtomically(
@@ -165,6 +172,17 @@ void FDatasetSession::RegisterRendererMetrics(const FCameraRendererMetricsSnapsh
     RendererMetrics.Add(Metrics);
 }
 
+void FDatasetSession::RegisterSemanticTaxonomy(const USemanticTaxonomy& Taxonomy)
+{
+    SemanticTaxonomyAsset = Taxonomy.GetPathName();
+    SemanticTaxonomyVersion = Taxonomy.Version;
+    SemanticTaxonomyEntries = Taxonomy.Classes;
+    SemanticTaxonomyEntries.Sort([](const FSemanticTaxonomyEntry& A, const FSemanticTaxonomyEntry& B)
+    {
+        return A.Id < B.Id;
+    });
+}
+
 /** 写入 metadata.json。 */
 bool FDatasetSession::WriteMetadata(
     const FFrameAssemblerStats& FrameStats,
@@ -218,6 +236,22 @@ bool FDatasetSession::WriteMetadata(
     Writer->WriteValue(TEXT("export_terminal_counts_conserved"), bExportConserved);
     Writer->WriteValue(TEXT("assembled_equals_export_enqueued"), bPipelineConserved);
     Writer->WriteValue(TEXT("passed"), bConsistencyPassed);
+    Writer->WriteObjectEnd();
+
+    Writer->WriteObjectStart(TEXT("semantic_taxonomy"));
+    Writer->WriteValue(TEXT("asset"), SemanticTaxonomyAsset);
+    Writer->WriteValue(TEXT("version"), SemanticTaxonomyVersion);
+    Writer->WriteArrayStart(TEXT("classes"));
+    for (const FSemanticTaxonomyEntry& Entry : SemanticTaxonomyEntries)
+    {
+        Writer->WriteObjectStart();
+        Writer->WriteValue(TEXT("id"), Entry.Id);
+        Writer->WriteValue(TEXT("stable_name"), Entry.StableName.ToString());
+        Writer->WriteValue(TEXT("display_name"), Entry.DisplayName.ToString());
+        Writer->WriteValue(TEXT("debug_color"), Entry.DebugColor.ToFColor(true).ToHex());
+        Writer->WriteObjectEnd();
+    }
+    Writer->WriteArrayEnd();
     Writer->WriteObjectEnd();
 
     Writer->WriteObjectStart(TEXT("lidar_schema"));
@@ -433,6 +467,50 @@ bool FDatasetSession::WriteTextFileAtomically(const FString& FinalPath, const FS
         return false;
     }
     return true;
+}
+
+bool FDatasetSession::WriteManifestJsonLines() const
+{
+    TArray<FString> TemporaryDirectories;
+    IFileManager::Get().FindFiles(
+        TemporaryDirectories, *(SessionDirectory / TEXT("frame_*.tmp")), false, true);
+    if (!TemporaryDirectories.IsEmpty())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Cannot finalize Session with %d temporary frame directories."),
+            TemporaryDirectories.Num());
+        return false;
+    }
+    TArray<FString> FrameDirectories;
+    IFileManager::Get().FindFiles(FrameDirectories, *(SessionDirectory / TEXT("frame_*")), false, true);
+    FrameDirectories.RemoveAll([](const FString& Name) { return Name.EndsWith(TEXT(".tmp")); });
+    FrameDirectories.Sort();
+
+    FString Manifest;
+    for (const FString& FrameDirectory : FrameDirectories)
+    {
+        const FString AbsoluteFrameDirectory = SessionDirectory / FrameDirectory;
+        TArray<FString> Files;
+        IFileManager::Get().FindFiles(Files, *(AbsoluteFrameDirectory / TEXT("*")), true, false);
+        Files.Sort();
+        FString Line;
+        TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+            TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Line);
+        Writer->WriteObjectStart();
+        Writer->WriteValue(TEXT("frame_directory"), FrameDirectory);
+        Writer->WriteArrayStart(TEXT("files"));
+        for (const FString& File : Files)
+        {
+            Writer->WriteObjectStart();
+            Writer->WriteValue(TEXT("path"), File);
+            Writer->WriteValue(TEXT("size_bytes"), IFileManager::Get().FileSize(*(AbsoluteFrameDirectory / File)));
+            Writer->WriteObjectEnd();
+        }
+        Writer->WriteArrayEnd();
+        Writer->WriteObjectEnd();
+        Writer->Close();
+        Manifest += Line + LINE_TERMINATOR;
+    }
+    return WriteTextFileAtomically(SessionDirectory / TEXT("manifest.jsonl"), Manifest);
 }
 
 /** 生成唯一的会话标识符。 */

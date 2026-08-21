@@ -3,6 +3,7 @@
 #include "Engine/DeveloperSettings.h"
 #include "SimulationTypes.h"
 #include "SimulationSettings.generated.h"
+class USemanticTaxonomy;
 
 UCLASS(Config=SensorSimulation, DefaultConfig, meta=(DisplayName="Sensor Simulation"))
 /** SensorSimulation 插件的项目级开发者设置。 */
@@ -42,6 +43,8 @@ public:
     /** 确定性数据集模式使用的随机种子，相同种子保证可复现的 Actor 轨迹和帧序列。 */
     UPROPERTY(Config, EditAnywhere, Category="Deterministic")
     int32 RandomSeed = 42;
+    UPROPERTY(Config, EditAnywhere, Category="Semantic")
+    TSoftObjectPtr<USemanticTaxonomy> SemanticTaxonomy;
 
     /** 大于 0 时，在达到指定磁盘提交帧数后请求进程正常退出；主要用于命令行验收。 */
     UPROPERTY(Config, EditAnywhere, Category="Automation", meta=(ClampMin="0"))
@@ -66,6 +69,7 @@ struct SIMULATIONRUNTIME_API FSimulationRuntimeSettingsSnapshot
     FString DatasetRoot;
     double FrameTimeoutSeconds = 2.0;
     int32 RandomSeed = 42;
+    TSoftObjectPtr<USemanticTaxonomy> SemanticTaxonomy;
     int64 TargetCommittedFrames = 0;
     double ShutdownDrainTimeoutSeconds = 2.0;
 

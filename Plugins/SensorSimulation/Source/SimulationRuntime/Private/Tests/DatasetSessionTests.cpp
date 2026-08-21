@@ -111,6 +111,8 @@ bool FDatasetSessionCalibrationUpsertTest::RunTest(const FString& Parameters)
     }
     TestTrue(TEXT("Consistent session receives a final completion marker"),
         IFileManager::Get().FileExists(*(SessionDirectory / TEXT("COMPLETED"))));
+    TestTrue(TEXT("Finalized session receives a committed frame manifest"),
+        IFileManager::Get().FileExists(*(SessionDirectory / TEXT("manifest.jsonl"))));
     TestFalse(TEXT("Atomic metadata commit leaves no temporary file"),
         IFileManager::Get().FileExists(*(SessionDirectory / TEXT("metadata.json.tmp"))));
     TestFalse(TEXT("Atomic calibration commit leaves no temporary file"),

@@ -1,11 +1,19 @@
 #include "SemanticRegistry.h"
 #include "SemanticImageLabel.h"
 #include "SemanticObjectComponent.h"
+#include "SemanticTaxonomy.h"
 #include "GameFramework/Actor.h"
 
 /** 为语义对象分配唯一实例编号并建立 Actor 到组件的弱引用映射。 */
 uint32 FSemanticRegistry::Register(USemanticObjectComponent& Component)
 {
+    if (bTaxonomyEnforced && !AllowedSemanticIds.Contains(Component.SemanticId))
+    {
+        UE_LOG(LogTemp, Error, TEXT("SemanticId %d on '%s' is not declared by the configured taxonomy."),
+            Component.SemanticId, *GetNameSafe(Component.GetOwner()));
+        Component.SetAssignedInstanceId(0);
+        return 0;
+    }
     const uint32 RequiredCount = Component.GetRequiredInstanceIdCount();
     const uint64 EndExclusive = NextInstanceId + RequiredCount;
     if (RequiredCount == 0 || EndExclusive > static_cast<uint64>(MAX_uint32) + 1u)
@@ -56,6 +64,15 @@ void FSemanticRegistry::GetImageSemanticIds(TSet<uint8>& OutIds) const
     }
 }
 
+void FSemanticRegistry::ConfigureTaxonomy(const USemanticTaxonomy* Taxonomy)
+{
+    AllowedSemanticIds.Reset();
+    bTaxonomyEnforced = Taxonomy != nullptr;
+    if (!Taxonomy) return;
+    AllowedSemanticIds.Add(0);
+    for (const FSemanticTaxonomyEntry& Entry : Taxonomy->Classes) AllowedSemanticIds.Add(Entry.Id);
+}
+
 void FSemanticRegistry::GetLidarSemanticIds(TSet<uint16>& OutIds) const
 {
     OutIds.Reset();
@@ -96,4 +113,6 @@ void FSemanticRegistry::Reset()
 {
     Entries.Reset();
     NextInstanceId = 1;
+    AllowedSemanticIds.Reset();
+    bTaxonomyEnforced = false;
 }

@@ -9,6 +9,7 @@
 #include "IImageWrapper.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
+#include "LidarSerialization.h"
 
 // ---------------------------------------------------------------------------
 // 后台 Worker 线程：从队列取出完整帧，写入磁盘
@@ -182,9 +183,15 @@ struct FExportService::FImpl : public FRunnable
         bSuccess &= WriteFrameMetadataJson(FrameDir / TEXT("frame_info.json"), Packet);
         if (bSuccess)
         {
-            bSuccess = FileManager.Move(
-                *FinalFrameDir, *FrameDir,
-                false, true, false, true);
+            // Windows 上杀毒/索引器可能短暂持有刚关闭的文件；有限重试避免留下孤立 tmp。
+            bSuccess = false;
+            for (int32 Attempt = 0; Attempt < 5 && !bSuccess; ++Attempt)
+            {
+                bSuccess = FileManager.Move(
+                    *FinalFrameDir, *FrameDir,
+                    false, true, false, true);
+                if (!bSuccess && Attempt < 4) FPlatformProcess::SleepNoStats(0.01f);
+            }
             if (!bSuccess)
             {
                 UE_LOG(LogTemp, Error,
@@ -264,44 +271,8 @@ struct FExportService::FImpl : public FRunnable
     /** 写出带自描述头和完整语义/实例/点时间的 LiDAR v2 小端格式。 */
     static bool WriteLidarExtendedBin(const FString& FilePath, const FLidarScanPayload& Scan)
     {
-        constexpr uint32 Magic = 0x52444C53u; // 文件字节为 "SLDR"
-        constexpr uint16 Version = 2;
-        constexpr uint16 HeaderBytes = 32;
-        constexpr uint32 PointStrideBytes = 28;
-        constexpr uint32 Flags = 0x7u; // SemanticId | InstanceId | RelativeTimeSeconds
-        constexpr uint32 CoordinateFrame = 1u; // Sensor FLU meters
-        constexpr uint32 EndianMarker = 0x01020304u;
-        constexpr uint32 Reserved = 0u;
-
         TArray<uint8> Buffer;
-        Buffer.Reserve(HeaderBytes + Scan.Points.Num() * PointStrideBytes);
-        const auto Append = [&Buffer](const void* Data, const int32 Bytes)
-        {
-            Buffer.Append(static_cast<const uint8*>(Data), Bytes);
-        };
-        const uint32 PointCount = static_cast<uint32>(Scan.Points.Num());
-        Append(&Magic, sizeof(Magic));
-        Append(&Version, sizeof(Version));
-        Append(&HeaderBytes, sizeof(HeaderBytes));
-        Append(&PointStrideBytes, sizeof(PointStrideBytes));
-        Append(&PointCount, sizeof(PointCount));
-        Append(&Flags, sizeof(Flags));
-        Append(&CoordinateFrame, sizeof(CoordinateFrame));
-        Append(&EndianMarker, sizeof(EndianMarker));
-        Append(&Reserved, sizeof(Reserved));
-
-        for (const FLidarPoint& Point : Scan.Points)
-        {
-            const uint16 PointReserved = 0;
-            Append(&Point.PositionMeters.X, sizeof(float));
-            Append(&Point.PositionMeters.Y, sizeof(float));
-            Append(&Point.PositionMeters.Z, sizeof(float));
-            Append(&Point.Intensity, sizeof(float));
-            Append(&Point.SemanticId, sizeof(uint16));
-            Append(&PointReserved, sizeof(uint16));
-            Append(&Point.InstanceId, sizeof(uint32));
-            Append(&Point.RelativeTimeSeconds, sizeof(float));
-        }
+        UE::SensorSimulation::LidarFormat::SerializeExtendedV2(Scan, Buffer);
         return FFileHelper::SaveArrayToFile(Buffer, *FilePath);
     }
 
@@ -366,8 +337,15 @@ struct FExportService::FImpl : public FRunnable
         Writer->WriteValue(TEXT("lidar_scan_count"), Packet.LidarScans.Num());
         Writer->WriteValue(TEXT("object_count"), Packet.Objects.Num());
         Writer->WriteArrayStart(TEXT("images"));
-        for (const FImagePayload& Image : Packet.Images)
+        TArray<const FImagePayload*> SortedImages;
+        for (const FImagePayload& Image : Packet.Images) SortedImages.Add(&Image);
+        SortedImages.Sort([](const FImagePayload& A, const FImagePayload& B)
         {
+            return A.ChannelGuid < B.ChannelGuid;
+        });
+        for (const FImagePayload* ImagePtr : SortedImages)
+        {
+            const FImagePayload& Image = *ImagePtr;
             Writer->WriteObjectStart();
             Writer->WriteValue(TEXT("sensor_guid"), Image.SensorGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
             Writer->WriteValue(TEXT("sensor_name"), Image.SensorName.ToString());
@@ -377,8 +355,15 @@ struct FExportService::FImpl : public FRunnable
         }
         Writer->WriteArrayEnd();
         Writer->WriteArrayStart(TEXT("lidar_scans"));
-        for (const FLidarScanPayload& Scan : Packet.LidarScans)
+        TArray<const FLidarScanPayload*> SortedScans;
+        for (const FLidarScanPayload& Scan : Packet.LidarScans) SortedScans.Add(&Scan);
+        SortedScans.Sort([](const FLidarScanPayload& A, const FLidarScanPayload& B)
         {
+            return A.SensorGuid < B.SensorGuid;
+        });
+        for (const FLidarScanPayload* ScanPtr : SortedScans)
+        {
+            const FLidarScanPayload& Scan = *ScanPtr;
             Writer->WriteObjectStart();
             Writer->WriteValue(TEXT("sensor_guid"), Scan.SensorGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
             Writer->WriteValue(TEXT("sensor_name"), Scan.SensorName.ToString());

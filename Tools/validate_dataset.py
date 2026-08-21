@@ -111,19 +111,35 @@ def main() -> int:
     session_dir = Path(args.session_dir)
     metadata_path = session_dir / "metadata.json"
     calibration_path = session_dir / "calibration.json"
+    manifest_path = session_dir / "manifest.jsonl"
     errors: List[str] = []
     metadata = load_json(metadata_path) if metadata_path.exists() else {}
     if not metadata_path.exists(): errors.append("metadata.json missing")
     if not calibration_path.exists(): errors.append("calibration.json missing")
+    if not manifest_path.exists(): errors.append("manifest.jsonl missing")
     if not (session_dir / "COMPLETED").exists(): errors.append("COMPLETED session marker missing")
     if metadata and not metadata.get("consistency", {}).get("passed", False):
         errors.append("metadata consistency checks did not pass")
     frame_dirs = find_frame_dirs(session_dir)
+    manifest_entries = []
+    if manifest_path.exists():
+        try:
+            manifest_entries = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (json.JSONDecodeError, OSError) as exc:
+            errors.append(f"manifest.jsonl invalid: {exc}")
+    if len(manifest_entries) != len(frame_dirs):
+        errors.append(f"manifest entries={len(manifest_entries)} but frame directories={len(frame_dirs)}")
+    for entry in manifest_entries:
+        frame_dir = session_dir / entry.get("frame_directory", "")
+        for item in entry.get("files", []):
+            path = frame_dir / item.get("path", "")
+            if not path.is_file() or path.stat().st_size != int(item.get("size_bytes", -1)):
+                errors.append(f"manifest file mismatch: {path}")
     committed = int(metadata.get("statistics", {}).get("export_committed_frames", len(frame_dirs)))
     if committed != len(frame_dirs): errors.append(f"committed={committed} but frame directories={len(frame_dirs)}")
     temp_dirs = list(session_dir.glob("frame_*.tmp"))
     if temp_dirs: errors.append(f"{len(temp_dirs)} temporary frame directories remain")
-    temp_files = list(session_dir.glob("*.tmp"))
+    temp_files = [path for path in session_dir.glob("*.tmp") if path.is_file()]
     if temp_files: errors.append(f"{len(temp_files)} temporary session files remain")
     valid_ids = {int(value) for value in args.semantic_ids.split(",")} if args.semantic_ids else derive_semantic_ids(frame_dirs)
     total_points = semantic_images = lidar_files = 0

@@ -4,6 +4,7 @@
 #include "CoordinateConverter.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "Components/SceneComponent.h"
 
 /** 构造并初始化 USimLidarSensorComponent 的默认状态。 */
 USimLidarSensorComponent::USimLidarSensorComponent()
@@ -43,7 +44,7 @@ void USimLidarSensorComponent::RegisterCurrentCalibration()
         FLidarCalibration Calibration;
         Calibration.SensorName = SensorName;
         Calibration.SensorGuid = SensorGuid;
-        Calibration.SensorToEgo = Config.SensorToOwner;
+        Calibration.SensorToEgo = ResolveSensorToOwner();
         Calibration.Channels = Config.Channels;
         Calibration.HorizontalSamples = Config.HorizontalSamples;
         Calibration.VerticalFovUpperDegrees = Config.VerticalFovUpperDegrees;
@@ -73,7 +74,7 @@ ECaptureRequestResult USimLidarSensorComponent::RequestCapture(const FCaptureReq
     ActiveScan.Header = Request.Header;
     ActiveScan.SensorName = Request.SensorName;
     ActiveScan.SensorGuid = Request.SensorGuid;
-    ActiveScan.SensorToEgo = Config.SensorToOwner;
+    ActiveScan.SensorToEgo = ResolveSensorToOwner();
     ActiveScan.ExpectedRayCount = static_cast<uint32>(LocalRayDirections.Num());
     ActiveScan.Points.Reserve(LocalRayDirections.Num());
     NextRayIndex = 0;
@@ -105,7 +106,7 @@ void USimLidarSensorComponent::TraceBatch()
         return;
     }
 
-    const FTransform SensorTransform = Config.SensorToOwner * Owner->GetActorTransform();
+    const FTransform SensorTransform = ResolveSensorToOwner() * Owner->GetActorTransform();
     const FVector Origin = SensorTransform.GetLocation();
     // 将完整扫描分摊到多个 Tick，限制单帧物理查询量，避免大量射线造成明显卡顿。
     const int32 BatchEnd = FMath::Min(NextRayIndex + FMath::Max(1, Config.RaysPerTick), LocalRayDirections.Num());
@@ -169,6 +170,15 @@ void USimLidarSensorComponent::FinalizeScan()
         }
     }
 
+}
+
+FTransform USimLidarSensorComponent::ResolveSensorToOwner() const
+{
+    if (SensorMount && SensorMount->GetOwner() == GetOwner())
+    {
+        return SensorMount->GetComponentTransform().GetRelativeTransform(GetOwner()->GetActorTransform());
+    }
+    return Config.SensorToOwner;
 }
 
 void USimLidarSensorComponent::PrepareForShutdown()

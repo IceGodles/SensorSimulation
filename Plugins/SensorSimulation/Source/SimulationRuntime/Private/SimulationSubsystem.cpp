@@ -2,6 +2,7 @@
 #include "SemanticObjectComponent.h"
 #include "SimSensorComponentBase.h"
 #include "SimulationSettings.h"
+#include "SemanticTaxonomy.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
@@ -37,6 +38,23 @@ void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
         SettingsSnapshot.TargetCommittedFrames);
     FParse::Value(FCommandLine::Get(), TEXT("SensorShutdownDrainSeconds="),
         SettingsSnapshot.ShutdownDrainTimeoutSeconds);
+    FString ModeOverride;
+    if (FParse::Value(FCommandLine::Get(), TEXT("SensorSimulationMode="), ModeOverride))
+    {
+        if (ModeOverride.Equals(TEXT("Deterministic"), ESearchCase::IgnoreCase)
+            || ModeOverride.Equals(TEXT("DeterministicDataset"), ESearchCase::IgnoreCase))
+        {
+            SettingsSnapshot.SimulationMode = ESimulationMode::DeterministicDataset;
+        }
+        else if (ModeOverride.Equals(TEXT("Realtime"), ESearchCase::IgnoreCase))
+        {
+            SettingsSnapshot.SimulationMode = ESimulationMode::Realtime;
+        }
+        else
+        {
+            UE_LOG(LogTemp, Error, TEXT("Unknown SensorSimulationMode override: %s"), *ModeOverride);
+        }
+    }
     SettingsSnapshot.TargetCommittedFrames = FMath::Max<int64>(0, SettingsSnapshot.TargetCommittedFrames);
     SettingsSnapshot.ShutdownDrainTimeoutSeconds =
         FMath::Max(0.0, SettingsSnapshot.ShutdownDrainTimeoutSeconds);
@@ -58,6 +76,19 @@ void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
     DatasetSession = MakeUnique<FDatasetSession>();
     DatasetSession->Start(SettingsSnapshot.DatasetRoot);
+    if (!SettingsSnapshot.SemanticTaxonomy.IsNull())
+    {
+        if (USemanticTaxonomy* Taxonomy = SettingsSnapshot.SemanticTaxonomy.LoadSynchronous())
+        {
+            SemanticRegistry.ConfigureTaxonomy(Taxonomy);
+            DatasetSession->RegisterSemanticTaxonomy(*Taxonomy);
+        }
+        else
+        {
+            UE_LOG(LogTemp, Error, TEXT("Failed to load configured SemanticTaxonomy: %s"),
+                *SettingsSnapshot.SemanticTaxonomy.ToString());
+        }
+    }
 
     // Export 容量属于同一快照，运行中修改 Settings 不会改变当前会话背压语义。
     ExportService = MakeUnique<FExportService>(SettingsSnapshot.MaxPendingFrames);

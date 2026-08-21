@@ -4,6 +4,7 @@
 
 class AActor;
 class USemanticObjectComponent;
+class USemanticTaxonomy;
 
 /** 维护 Actor 到语义组件映射并分配实例编号的注册表。 */
 class SIMULATIONRUNTIME_API FSemanticRegistry
@@ -11,6 +12,7 @@ class SIMULATIONRUNTIME_API FSemanticRegistry
 public:
 /** 为语义对象分配唯一实例编号并建立 Actor 到组件的弱引用映射。 */
     uint32 Register(USemanticObjectComponent& Component);
+    void ConfigureTaxonomy(const USemanticTaxonomy* Taxonomy);
 /** 从语义注册表移除指定组件所属 Actor。 */
     void Unregister(const USemanticObjectComponent& Component);
 /** 查询 Actor 对应且仍然有效的语义组件。 */
@@ -27,6 +29,8 @@ public:
 private:
     /** 下一次注册语义对象时分配的实例编号。 */
     uint64 NextInstanceId = 1;
+    TSet<int32> AllowedSemanticIds;
+    bool bTaxonomyEnforced = false;
     /** Actor 到语义组件的弱引用映射，避免注册表延长 UObject 生命周期。 */
     TMap<TWeakObjectPtr<const AActor>, TWeakObjectPtr<USemanticObjectComponent>> Entries;
 };

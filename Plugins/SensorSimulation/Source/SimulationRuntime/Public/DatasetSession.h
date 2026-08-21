@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "SimulationTypes.h"
 #include "CameraRigComponent.h"
+#include "SemanticTaxonomy.h"
 
 struct FFrameAssemblerStats;
 struct FExportServiceStats;
@@ -51,6 +52,7 @@ public:
     void RegisterLidarCalibration(const FLidarCalibration& Calibration);
     /** 注册或更新 Camera Rig 的 Renderer 指标；会话结束时写入 metadata.json。 */
     void RegisterRendererMetrics(const FCameraRendererMetricsSnapshot& Metrics);
+    void RegisterSemanticTaxonomy(const USemanticTaxonomy& Taxonomy);
 
     /** 返回当前会话的输出目录路径。 */
     FString GetSessionDirectory() const { return SessionDirectory; }
@@ -67,6 +69,8 @@ public:
 private:
     /** 将已注册的逐通道相机标定写入 calibration.json。 */
     bool WriteCalibrationJson() const;
+    /** 根据最终 frame 目录生成可重建、稳定排序的 committed frame 索引。 */
+    bool WriteManifestJsonLines() const;
     /** 先写同目录临时文件，再原子替换最终文件。 */
     static bool WriteTextFileAtomically(const FString& FinalPath, const FString& Contents);
     /** 生成唯一的会话标识符。 */
@@ -87,4 +91,7 @@ private:
     TArray<FLidarCalibration> LidarCalibrations;
     /** 每台 Camera Rig 的最新 Renderer 指标快照。 */
     TArray<FCameraRendererMetricsSnapshot> RendererMetrics;
+    FString SemanticTaxonomyAsset;
+    FString SemanticTaxonomyVersion;
+    TArray<FSemanticTaxonomyEntry> SemanticTaxonomyEntries;
 };

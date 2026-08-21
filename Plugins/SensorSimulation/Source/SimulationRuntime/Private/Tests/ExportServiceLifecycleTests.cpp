@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "HAL/FileManager.h"
+#include "HAL/PlatformProcess.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -174,6 +175,45 @@ bool FExportServiceLifecycleTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Committed count equals final frame count"), ExportStats.CommittedFrames, int64{3});
     TestEqual(TEXT("All accepted frames are counted as enqueued"), ExportStats.EnqueuedFrames, int64{4});
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FExportServiceThousandFrameStabilityTest,
+    "SensorSimulation.Lifecycle.ExportService.ThousandFrameStability",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FExportServiceThousandFrameStabilityTest::RunTest(const FString& Parameters)
+{
+    const FString OutputRoot = FPaths::Combine(
+        FPaths::ProjectSavedDir(), TEXT("Automation"), TEXT("SensorSimulation"), TEXT("Export1000"));
+    IFileManager::Get().DeleteDirectory(*OutputRoot, false, true);
+    FExportService Service(8);
+    if (!TestTrue(TEXT("Long-stability Export worker starts"), Service.Start(OutputRoot))) return false;
+    for (uint64 FrameId = 1; FrameId <= 1000; ++FrameId)
+    {
+        while (!Service.HasCapacity()) FPlatformProcess::SleepNoStats(0.001f);
+        FFramePacket Packet;
+        Packet.Header.FrameId = FrameId;
+        Packet.Header.SequenceId = 1;
+        Packet.Header.SimulationTimestampSeconds = FrameId * 0.05;
+        Packet.ExpectedPayloads = EPayloadType::None;
+        Packet.CompletedPayloads = EPayloadType::None;
+        if (!Service.Enqueue(MoveTemp(Packet), EExportBackpressurePolicy::PauseDatasetClock))
+        {
+            AddError(FString::Printf(TEXT("Frame %llu was rejected during long-stability export."), FrameId));
+            break;
+        }
+    }
+    Service.Stop();
+    const FExportServiceStats Stats = Service.GetStats();
+    TestEqual(TEXT("All 1000 synthetic frames commit"), Stats.CommittedFrames, int64{1000});
+    TestEqual(TEXT("No long-stability frame fails"), Stats.FailedFrames, int64{0});
+    TestEqual(TEXT("No long-stability frame is rejected"), Stats.RejectedFrames, int64{0});
+    TArray<FString> FinalDirectories;
+    IFileManager::Get().FindFiles(FinalDirectories, *(OutputRoot / TEXT("frame_*")), false, true);
+    FinalDirectories.RemoveAll([](const FString& Name) { return Name.EndsWith(TEXT(".tmp")); });
+    TestEqual(TEXT("Disk exposes exactly 1000 final frame directories"), FinalDirectories.Num(), 1000);
     return true;
 }
 

@@ -4,6 +4,8 @@
 #include "SimSensorComponentBase.h"
 #include "SimLidarSensorComponent.generated.h"
 
+class USceneComponent;
+
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnLidarScanComplete, const FLidarScanPayload&);
 
 USTRUCT(BlueprintType)
@@ -63,6 +65,10 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="LiDAR")
     FSimLidarConfig Config;
 
+    /** 可选的可视化安装点；设置后以其相对 Owner 的场景 Transform 作为 LiDAR 外参。 */
+    UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category="LiDAR", meta=(UseComponentPicker, AllowedClasses="/Script/Engine.SceneComponent"))
+    TObjectPtr<USceneComponent> SensorMount = nullptr;
+
 /** 在组件开始运行时完成注册或初始化工作。 */
     virtual void BeginPlay() override;
 /** 在组件 Tick 中推进当前分批扫描任务。 */
@@ -94,6 +100,8 @@ private:
     void RebuildPattern();
     /** 将当前 LiDAR 外参和扫描参数登记到会话 calibration.json。 */
     void RegisterCurrentCalibration();
+    /** 优先返回场景安装点外参；未配置 Mount 时兼容旧 SensorToOwner 配置。 */
+    FTransform ResolveSensorToOwner() const;
 /** 执行一批射线检测并生成带语义和相对时间的回波点。 */
     void TraceBatch();
 /** 结束当前扫描、停用 Tick 并广播扫描结果。 */
