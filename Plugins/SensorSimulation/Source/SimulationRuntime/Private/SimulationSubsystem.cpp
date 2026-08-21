@@ -4,6 +4,7 @@
 #include "SimulationSettings.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformProcess.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
@@ -54,9 +55,21 @@ void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 /** 清空传感器和语义状态后反初始化子系统。 */
 void USimulationSubsystem::Deinitialize()
 {
-    // 先停止导出服务，确保所有帧已写出
+    // 停止调度后，先把已经完整的帧全部移交 Export；允许 Worker 在关停屏障内释放容量。
     if (ExportService)
     {
+        const double DrainDeadline = FPlatformTime::Seconds() + 2.0;
+        while (FrameAssembler.GetCompleteFrameCount() > 0
+            && FPlatformTime::Seconds() < DrainDeadline)
+        {
+            FlushCompleteFramesToExport();
+            if (FrameAssembler.GetCompleteFrameCount() > 0)
+            {
+                FPlatformProcess::SleepNoStats(0.001f);
+            }
+        }
+        // 仍在等待 Sensor/GPU 的帧无法在 World 销毁后安全完成，进入显式 Cancelled 终态。
+        FrameAssembler.CancelAllPendingFrames();
         ExportService->Stop();
     }
 
@@ -117,7 +130,8 @@ bool USimulationSubsystem::FlushCompleteFramesToExport()
 
     const bool bDeterministic =
         SettingsSnapshot.SimulationMode == ESimulationMode::DeterministicDataset;
-    while (!bDeterministic || ExportService->HasCapacity())
+    // 两种模式都只在 Queue 有容量时 Pop；否则完整帧继续由 Assembler 持有，避免 Pop 后不可恢复地 Reject。
+    while (ExportService->HasCapacity())
     {
         FFramePacket CompletePacket;
         if (!FrameAssembler.PopCompleteFrame(CompletePacket))
@@ -182,9 +196,17 @@ bool USimulationSubsystem::SubmitImage(FImagePayload&& Image)
 }
 
 /** 把完成的点云移交给帧聚合器。 */
-void USimulationSubsystem::SubmitLidar(FLidarScanPayload&& Scan)
+bool USimulationSubsystem::SubmitLidar(FLidarScanPayload&& Scan)
 {
-    FrameAssembler.AddLidar(MoveTemp(Scan));
+    if (!ValidateLidarPayload(Scan))
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("Rejected LiDAR payload: frame=%llu sensor='%s' rays=%u/%u hits=%d complete=%d."),
+            Scan.Header.FrameId, *Scan.SensorName.ToString(), Scan.CompletedRayCount,
+            Scan.ExpectedRayCount, Scan.Points.Num(), Scan.bCompleteRevolution ? 1 : 0);
+        return false;
+    }
+    return FrameAssembler.AddLidar(MoveTemp(Scan));
 }
 
 /** 注册相机标定参数，会话结束时写入 calibration.json。 */
@@ -271,6 +293,14 @@ void USimulationSubsystem::RequestFrame(
     }
 }
 
+void USimulationSubsystem::RegisterLidarCalibration(const FLidarCalibration& Calibration)
+{
+    if (DatasetSession)
+    {
+        DatasetSession->RegisterLidarCalibration(Calibration);
+    }
+}
+
 /** 验证紧密图像布局，以及 Semantic/Instance 标签集合和 Depth 格式。 */
 bool USimulationSubsystem::ValidateImagePayload(const FImagePayload& Image) const
 {
@@ -329,6 +359,42 @@ bool USimulationSubsystem::ValidateImagePayload(const FImagePayload& Image) cons
                 return false;
             }
         }
+    }
+    return true;
+}
+
+bool USimulationSubsystem::ValidateLidarPayload(const FLidarScanPayload& Scan) const
+{
+    if (!Scan.SensorGuid.IsValid()
+        || Scan.Header.FrameId == 0
+        || Scan.ExpectedRayCount == 0
+        || Scan.CompletedRayCount != Scan.ExpectedRayCount
+        || !Scan.bCompleteRevolution
+        || static_cast<uint32>(Scan.Points.Num()) > Scan.CompletedRayCount)
+    {
+        return false;
+    }
+
+    TSet<uint16> ValidSemanticIds;
+    TSet<uint32> ValidInstanceIds;
+    SemanticRegistry.GetLidarSemanticIds(ValidSemanticIds);
+    SemanticRegistry.GetInstanceIds(ValidInstanceIds);
+    float PreviousRelativeTime = -1.0f;
+    for (const FLidarPoint& Point : Scan.Points)
+    {
+        if (!FMath::IsFinite(Point.PositionMeters.X)
+            || !FMath::IsFinite(Point.PositionMeters.Y)
+            || !FMath::IsFinite(Point.PositionMeters.Z)
+            || !FMath::IsFinite(Point.Intensity)
+            || !FMath::IsFinite(Point.RelativeTimeSeconds)
+            || Point.Intensity < 0.0f || Point.Intensity > 1.0f
+            || Point.RelativeTimeSeconds < PreviousRelativeTime
+            || !ValidSemanticIds.Contains(Point.SemanticId)
+            || !ValidInstanceIds.Contains(Point.InstanceId))
+        {
+            return false;
+        }
+        PreviousRelativeTime = Point.RelativeTimeSeconds;
     }
     return true;
 }

@@ -115,6 +115,63 @@ bool FDeterministicSimulationSchedulerTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRealtimeBackpressureSchedulerTest,
+    "SensorSimulation.Runtime.Clock.RealtimeExportBackpressure",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRealtimeBackpressureSchedulerTest::RunTest(const FString& Parameters)
+{
+    FSimulationScheduler Scheduler;
+    Scheduler.Initialize(ESimulationMode::Realtime, 0.05);
+
+    TestFalse(TEXT("Realtime clock pauses before creating work when Export is full"),
+        Scheduler.Poll(0.25, true, false).IsSet());
+    TestEqual(TEXT("Realtime backpressure reason is explicit"),
+        Scheduler.GetPauseReason(), ESimulationSchedulerPauseReason::ExportBackpressure);
+    TestEqual(TEXT("Paused realtime clock does not accumulate an unbounded catch-up burst"),
+        Scheduler.GetSimulationSeconds(), 0.0);
+
+    const TOptional<double> Resumed = Scheduler.Poll(0.05, true, true);
+    TestTrue(TEXT("Realtime clock resumes when Export has capacity"), Resumed.IsSet());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FDeterministicThousandStepScheduleTest,
+    "SensorSimulation.Runtime.Clock.ThousandStepDeterminism",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDeterministicThousandStepScheduleTest::RunTest(const FString& Parameters)
+{
+    auto BuildScheduleHash = [](const double TickDelta)
+    {
+        FSimulationScheduler Scheduler;
+        FSensorCapturePlanner Planner;
+        Scheduler.Initialize(ESimulationMode::DeterministicDataset, 0.05);
+        const FGuid CameraGuid(1, 2, 3, 4);
+        const FGuid LidarGuid(5, 6, 7, 8);
+        uint32 Hash = 0;
+        for (int32 Step = 0; Step < 1000; ++Step)
+        {
+            const TOptional<double> Timestamp = Scheduler.Poll(TickDelta, true, true);
+            check(Timestamp.IsSet());
+            const bool bCameraDue = Planner.IsDue(CameraGuid, Timestamp.GetValue());
+            const bool bLidarDue = Planner.IsDue(LidarGuid, Timestamp.GetValue());
+            Hash = HashCombineFast(Hash, GetTypeHash(Timestamp.GetValue()));
+            Hash = HashCombineFast(Hash, GetTypeHash(bCameraDue));
+            Hash = HashCombineFast(Hash, GetTypeHash(bLidarDue));
+            if (bCameraDue) Planner.MarkAttempt(CameraGuid, 20.0f, Timestamp.GetValue());
+            if (bLidarDue) Planner.MarkAttempt(LidarGuid, 10.0f, Timestamp.GetValue());
+        }
+        return Hash;
+    };
+
+    TestEqual(TEXT("Deterministic schedule is independent of game-thread frame delta"),
+        BuildScheduleHash(1.0 / 30.0), BuildScheduleHash(1.0 / 144.0));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FRuntimeSettingsSnapshotTest,
     "SensorSimulation.Runtime.Settings.DatasetRootAndSessionSnapshot",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

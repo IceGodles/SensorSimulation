@@ -167,9 +167,11 @@ struct FExportService::FImpl : public FRunnable
         for (const FLidarScanPayload& Scan : Packet.LidarScans)
         {
             const FString IdentitySuffix = Packet.LidarScans.Num() > 1
-                ? TEXT("_") + Scan.SensorGuid.ToString(EGuidFormats::Digits).Left(8)
+                ? TEXT("_") + Scan.SensorGuid.ToString(EGuidFormats::Digits)
                 : FString();
             bSuccess &= WriteLidarBin(FrameDir / (TEXT("lidar") + IdentitySuffix + TEXT(".bin")), Scan);
+            bSuccess &= WriteLidarExtendedBin(
+                FrameDir / (TEXT("lidar_extended") + IdentitySuffix + TEXT(".bin")), Scan);
         }
 
         // 即使场景中没有语义对象也写出合法空数组，避免“零对象”和“漏写”不可区分。
@@ -259,6 +261,50 @@ struct FExportService::FImpl : public FRunnable
         return FFileHelper::SaveArrayToFile(Buffer, *FilePath);
     }
 
+    /** 写出带自描述头和完整语义/实例/点时间的 LiDAR v2 小端格式。 */
+    static bool WriteLidarExtendedBin(const FString& FilePath, const FLidarScanPayload& Scan)
+    {
+        constexpr uint32 Magic = 0x52444C53u; // 文件字节为 "SLDR"
+        constexpr uint16 Version = 2;
+        constexpr uint16 HeaderBytes = 32;
+        constexpr uint32 PointStrideBytes = 28;
+        constexpr uint32 Flags = 0x7u; // SemanticId | InstanceId | RelativeTimeSeconds
+        constexpr uint32 CoordinateFrame = 1u; // Sensor FLU meters
+        constexpr uint32 EndianMarker = 0x01020304u;
+        constexpr uint32 Reserved = 0u;
+
+        TArray<uint8> Buffer;
+        Buffer.Reserve(HeaderBytes + Scan.Points.Num() * PointStrideBytes);
+        const auto Append = [&Buffer](const void* Data, const int32 Bytes)
+        {
+            Buffer.Append(static_cast<const uint8*>(Data), Bytes);
+        };
+        const uint32 PointCount = static_cast<uint32>(Scan.Points.Num());
+        Append(&Magic, sizeof(Magic));
+        Append(&Version, sizeof(Version));
+        Append(&HeaderBytes, sizeof(HeaderBytes));
+        Append(&PointStrideBytes, sizeof(PointStrideBytes));
+        Append(&PointCount, sizeof(PointCount));
+        Append(&Flags, sizeof(Flags));
+        Append(&CoordinateFrame, sizeof(CoordinateFrame));
+        Append(&EndianMarker, sizeof(EndianMarker));
+        Append(&Reserved, sizeof(Reserved));
+
+        for (const FLidarPoint& Point : Scan.Points)
+        {
+            const uint16 PointReserved = 0;
+            Append(&Point.PositionMeters.X, sizeof(float));
+            Append(&Point.PositionMeters.Y, sizeof(float));
+            Append(&Point.PositionMeters.Z, sizeof(float));
+            Append(&Point.Intensity, sizeof(float));
+            Append(&Point.SemanticId, sizeof(uint16));
+            Append(&PointReserved, sizeof(uint16));
+            Append(&Point.InstanceId, sizeof(uint32));
+            Append(&Point.RelativeTimeSeconds, sizeof(float));
+        }
+        return FFileHelper::SaveArrayToFile(Buffer, *FilePath);
+    }
+
     /** 将 Ground Truth 对象列表写入 JSON 文件。 */
     static bool WriteGroundTruthJson(
         const FString& FilePath,
@@ -340,6 +386,8 @@ struct FExportService::FImpl : public FRunnable
             Writer->WriteValue(TEXT("completed_ray_count"), static_cast<int64>(Scan.CompletedRayCount));
             Writer->WriteValue(TEXT("hit_count"), Scan.Points.Num());
             Writer->WriteValue(TEXT("complete_revolution"), Scan.bCompleteRevolution);
+            Writer->WriteValue(TEXT("basic_format_version"), 1);
+            Writer->WriteValue(TEXT("extended_format_version"), 2);
             Writer->WriteObjectEnd();
         }
         Writer->WriteArrayEnd();

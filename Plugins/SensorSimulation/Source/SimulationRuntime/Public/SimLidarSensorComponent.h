@@ -43,6 +43,10 @@ struct SIMULATIONRUNTIME_API FSimLidarConfig
     /** 雷达射线检测使用的 Unreal 碰撞通道。 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="LiDAR")
     TEnumAsByte<ECollisionChannel> TraceChannel = ECC_Visibility;
+
+    /** LiDAR 相对于所属 Ego Actor 的安装位姿；支持同一 Actor 上的多雷达外参。 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="LiDAR")
+    FTransform SensorToOwner = FTransform::Identity;
 };
 
 UCLASS(ClassGroup=(SensorSimulation), meta=(BlueprintSpawnableComponent))
@@ -86,6 +90,8 @@ private:
 
 /** 根据当前雷达配置重新生成局部扫描射线。 */
     void RebuildPattern();
+    /** 将当前 LiDAR 外参和扫描参数登记到会话 calibration.json。 */
+    void RegisterCurrentCalibration();
 /** 执行一批射线检测并生成带语义和相对时间的回波点。 */
     void TraceBatch();
 /** 结束当前扫描、停用 Tick 并广播扫描结果。 */

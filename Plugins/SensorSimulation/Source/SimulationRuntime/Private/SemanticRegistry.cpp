@@ -56,6 +56,22 @@ void FSemanticRegistry::GetImageSemanticIds(TSet<uint8>& OutIds) const
     }
 }
 
+void FSemanticRegistry::GetLidarSemanticIds(TSet<uint16>& OutIds) const
+{
+    OutIds.Reset();
+    OutIds.Add(0);
+    for (const TPair<TWeakObjectPtr<const AActor>, TWeakObjectPtr<USemanticObjectComponent>>& Entry : Entries)
+    {
+        if (const USemanticObjectComponent* Component = Entry.Value.Get())
+        {
+            if (Component->SemanticId >= 0 && Component->SemanticId <= MAX_uint16)
+            {
+                OutIds.Add(static_cast<uint16>(Component->SemanticId));
+            }
+        }
+    }
+}
+
 /** 收集背景 0 与所有仍有效对象的完整 32 位实例编号。 */
 void FSemanticRegistry::GetInstanceIds(TSet<uint32>& OutIds) const
 {

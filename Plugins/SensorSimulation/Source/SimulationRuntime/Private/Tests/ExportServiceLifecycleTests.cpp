@@ -127,6 +127,25 @@ bool FExportServiceLifecycleTest::RunTest(const FString& Parameters)
         IFileManager::Get().FileExists(*EmptyLidarPath));
     TestEqual(TEXT("Zero-hit lidar.bin is exactly empty"),
         IFileManager::Get().FileSize(*EmptyLidarPath), int64{0});
+    const FString EmptyExtendedLidarPath =
+        OutputRoot / TEXT("frame_000003") / TEXT("lidar_extended.bin");
+    TArray<uint8> EmptyExtendedBytes;
+    TestTrue(TEXT("Zero-hit LiDAR creates a versioned extended payload"),
+        FFileHelper::LoadFileToArray(EmptyExtendedBytes, *EmptyExtendedLidarPath));
+    TestEqual(TEXT("Zero-hit extended payload contains only its 32-byte header"),
+        EmptyExtendedBytes.Num(), 32);
+    if (EmptyExtendedBytes.Num() == 32)
+    {
+        uint32 Magic = 0;
+        uint16 Version = 0;
+        uint32 PointCount = 1;
+        FMemory::Memcpy(&Magic, EmptyExtendedBytes.GetData(), sizeof(Magic));
+        FMemory::Memcpy(&Version, EmptyExtendedBytes.GetData() + 4, sizeof(Version));
+        FMemory::Memcpy(&PointCount, EmptyExtendedBytes.GetData() + 12, sizeof(PointCount));
+        TestEqual(TEXT("Extended LiDAR magic is stable"), Magic, uint32{0x52444C53});
+        TestEqual(TEXT("Extended LiDAR schema version is 2"), Version, uint16{2});
+        TestEqual(TEXT("Zero-hit extended LiDAR reports zero points"), PointCount, uint32{0});
+    }
     TestFalse(TEXT("Committed frames leave no temporary directory"),
         IFileManager::Get().DirectoryExists(*(OutputRoot / TEXT("frame_000003.tmp"))));
 

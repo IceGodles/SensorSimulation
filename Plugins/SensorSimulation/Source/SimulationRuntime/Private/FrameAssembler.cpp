@@ -291,6 +291,20 @@ bool FFrameAssembler::FailFrame(const uint64 FrameId, const FGuid& SensorGuid, c
     return true;
 }
 
+int32 FFrameAssembler::CancelAllPendingFrames()
+{
+    TArray<uint64> FrameIds;
+    PendingFrames.GetKeys(FrameIds);
+    for (const uint64 FrameId : FrameIds)
+    {
+        RememberTerminalFrame(FrameId, static_cast<uint8>(EFrameTerminalState::Failed));
+        CleanupFrame(FrameId);
+    }
+    Stats.CancelledFrames += FrameIds.Num();
+    Stats.FailedFrames += FrameIds.Num();
+    return FrameIds.Num();
+}
+
 void FFrameAssembler::RememberTerminalFrame(const uint64 FrameId, const uint8 TerminalState)
 {
     if (TerminalFrames.Contains(FrameId)) return;

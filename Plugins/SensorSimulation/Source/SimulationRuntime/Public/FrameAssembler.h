@@ -48,6 +48,8 @@ struct FFrameAssemblerStats
     int32 PeakPendingFrames = 0;
     /** 因 Pending Frame 容量已满而未创建的帧数量。 */
     int64 CapacityRejectedFrames = 0;
+    /** Session 关停时仍未完成、被显式取消的帧数量。 */
+    int64 CancelledFrames = 0;
 };
 
 /** 按帧编号、按传感器名称聚合图像、点云与真值模态的同步器。 */
@@ -81,6 +83,10 @@ public:
     int32 PurgeTimedOutFrames(double CurrentTimeSeconds, double TimeoutSeconds);
     /** 传感器拒绝请求时立即终止帧，后续异步结果将按迟到 Payload 丢弃。 */
     bool FailFrame(uint64 FrameId, const FGuid& SensorGuid, FName SensorName, ECaptureRequestResult Result);
+    /** 关停屏障结束后取消全部未提交帧，并返回取消数量。 */
+    int32 CancelAllPendingFrames();
+    /** 返回已经完整、仅等待移交 Export 的帧数量。 */
+    int32 GetCompleteFrameCount() const { return EnqueuedCompleteFrames.Num(); }
 /** 返回当前等待所有模态到齐的帧数量。 */
     int32 GetPendingFrameCount() const;
 /** 返回帧聚合器的统计信息。 */

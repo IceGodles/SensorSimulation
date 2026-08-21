@@ -1,6 +1,7 @@
 #include "DatasetSession.h"
 #include "FrameAssembler.h"
 #include "ExportService.h"
+#include "CoordinateConverter.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "Misc/Guid.h"
@@ -53,6 +54,10 @@ bool FDatasetSession::Start(const FString& BaseRoot, const FString& SessionName)
         ? GenerateSessionDirectoryName()
         : FString::Printf(TEXT("%s_%s"), *GenerateSessionDirectoryName(), *SessionName);
 
+    // 秒级时间戳不足以区分同一进程内并发 World、快速 PIE 重启或自动化测试。
+    // SessionId 让每次会话拥有独立事务命名空间，避免两个 Export Worker 写入同一 frame_*.tmp。
+    DirName += FString::Printf(TEXT("_%s"), *SessionId);
+
     SessionDirectory = BaseRoot / DirName;
 
     // 创建目录
@@ -64,6 +69,7 @@ bool FDatasetSession::Start(const FString& BaseRoot, const FString& SessionName)
 
     State = ESessionState::Running;
     Calibrations.Reset();
+    LidarCalibrations.Reset();
     RendererMetrics.Reset();
 
     UE_LOG(LogTemp, Log, TEXT("DatasetSession started: %s -> %s"), *SessionId, *SessionDirectory);
@@ -81,7 +87,7 @@ void FDatasetSession::Stop()
     State = ESessionState::Stopping;
 
     // 写入 calibration.json
-    if (Calibrations.Num() > 0)
+    if (Calibrations.Num() > 0 || LidarCalibrations.Num() > 0)
     {
         WriteCalibrationJson();
     }
@@ -110,6 +116,19 @@ void FDatasetSession::RegisterCalibration(const FCalibration& Calibration)
         }
     }
     Calibrations.Add(Calibration);
+}
+
+void FDatasetSession::RegisterLidarCalibration(const FLidarCalibration& Calibration)
+{
+    for (FLidarCalibration& Existing : LidarCalibrations)
+    {
+        if (Existing.SensorGuid == Calibration.SensorGuid)
+        {
+            Existing = Calibration;
+            return;
+        }
+    }
+    LidarCalibrations.Add(Calibration);
 }
 
 /** 按 SensorGuid 更新 Camera Rig 的最新 Renderer 指标快照。 */
@@ -156,6 +175,7 @@ void FDatasetSession::WriteMetadata(
     Writer->WriteValue(TEXT("busy_frames"), FrameStats.BusyFrames);
     Writer->WriteValue(TEXT("rejected_frames"), FrameStats.RejectedFrames);
     Writer->WriteValue(TEXT("capacity_rejected_frames"), FrameStats.CapacityRejectedFrames);
+    Writer->WriteValue(TEXT("cancelled_frames"), FrameStats.CancelledFrames);
     Writer->WriteValue(TEXT("duplicate_payloads"), FrameStats.DuplicatePayloads);
     Writer->WriteValue(TEXT("late_payloads"), FrameStats.LatePayloads);
     Writer->WriteValue(TEXT("frame_assembler_peak_pending"), FrameStats.PeakPendingFrames);
@@ -165,6 +185,20 @@ void FDatasetSession::WriteMetadata(
     Writer->WriteValue(TEXT("export_committed_frames"), ExportStats.CommittedFrames);
     Writer->WriteValue(TEXT("export_failed_frames"), ExportStats.FailedFrames);
     Writer->WriteValue(TEXT("export_peak_pending"), ExportStats.PeakPendingFrames);
+    Writer->WriteObjectEnd();
+
+    Writer->WriteObjectStart(TEXT("lidar_schema"));
+    Writer->WriteValue(TEXT("byte_order"), TEXT("little_endian"));
+    Writer->WriteValue(TEXT("coordinate_frame"), TEXT("sensor_flu"));
+    Writer->WriteValue(TEXT("unit"), TEXT("meters"));
+    Writer->WriteValue(TEXT("basic_version"), 1);
+    Writer->WriteValue(TEXT("basic_point_stride_bytes"), 16);
+    Writer->WriteValue(TEXT("basic_fields"), TEXT("float32 x,y,z,intensity"));
+    Writer->WriteValue(TEXT("extended_version"), 2);
+    Writer->WriteValue(TEXT("extended_header_bytes"), 32);
+    Writer->WriteValue(TEXT("extended_point_stride_bytes"), 28);
+    Writer->WriteValue(TEXT("extended_fields"),
+        TEXT("float32 x,y,z,intensity; uint16 semantic_id; uint16 reserved; uint32 instance_id; float32 relative_time_seconds"));
     Writer->WriteObjectEnd();
 
     // Renderer 指标以最终/最近快照写入会话，便于离线判断背压、资源重建和特定模态延迟。
@@ -228,6 +262,35 @@ void FDatasetSession::WriteMetadata(
         Writer->WriteObjectEnd();
     }
     Writer->WriteArrayEnd();
+
+    Writer->WriteArrayStart(TEXT("lidars"));
+    for (const FLidarCalibration& Cal : LidarCalibrations)
+    {
+        Writer->WriteObjectStart();
+        Writer->WriteValue(TEXT("sensor_guid"), Cal.SensorGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
+        Writer->WriteValue(TEXT("sensor_name"), Cal.SensorName.ToString());
+        Writer->WriteValue(TEXT("channels"), Cal.Channels);
+        Writer->WriteValue(TEXT("horizontal_samples"), Cal.HorizontalSamples);
+        Writer->WriteValue(TEXT("vertical_fov_upper_degrees"), Cal.VerticalFovUpperDegrees);
+        Writer->WriteValue(TEXT("vertical_fov_lower_degrees"), Cal.VerticalFovLowerDegrees);
+        Writer->WriteValue(TEXT("min_range_meters"), Cal.MinRangeMeters);
+        Writer->WriteValue(TEXT("max_range_meters"), Cal.MaxRangeMeters);
+        Writer->WriteValue(TEXT("update_frequency_hz"), Cal.UpdateFrequencyHz);
+        Writer->WriteValue(TEXT("rays_per_tick"), Cal.RaysPerTick);
+
+        const FTransform FluTransform = FCoordinateConverter::UnrealToFrontLeftUpTransform(Cal.SensorToEgo);
+        const FVector T = FluTransform.GetLocation();
+        Writer->WriteValue(TEXT("sensor_to_ego_tx"), T.X);
+        Writer->WriteValue(TEXT("sensor_to_ego_ty"), T.Y);
+        Writer->WriteValue(TEXT("sensor_to_ego_tz"), T.Z);
+        const FQuat Q = FluTransform.GetRotation();
+        Writer->WriteValue(TEXT("sensor_to_ego_qw"), Q.W);
+        Writer->WriteValue(TEXT("sensor_to_ego_qx"), Q.X);
+        Writer->WriteValue(TEXT("sensor_to_ego_qy"), Q.Y);
+        Writer->WriteValue(TEXT("sensor_to_ego_qz"), Q.Z);
+        Writer->WriteObjectEnd();
+    }
+    Writer->WriteArrayEnd();
     Writer->WriteObjectEnd();
 
     Writer->WriteObjectStart(TEXT("coordinate_system"));
@@ -285,6 +348,34 @@ void FDatasetSession::WriteCalibrationJson() const
         Writer->WriteObjectEnd();
     }
 
+    Writer->WriteArrayEnd();
+
+    Writer->WriteArrayStart(TEXT("lidars"));
+    for (const FLidarCalibration& Cal : LidarCalibrations)
+    {
+        Writer->WriteObjectStart();
+        Writer->WriteValue(TEXT("sensor_guid"), Cal.SensorGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
+        Writer->WriteValue(TEXT("sensor_name"), Cal.SensorName.ToString());
+        Writer->WriteValue(TEXT("channels"), Cal.Channels);
+        Writer->WriteValue(TEXT("horizontal_samples"), Cal.HorizontalSamples);
+        Writer->WriteValue(TEXT("vertical_fov_upper_degrees"), Cal.VerticalFovUpperDegrees);
+        Writer->WriteValue(TEXT("vertical_fov_lower_degrees"), Cal.VerticalFovLowerDegrees);
+        Writer->WriteValue(TEXT("min_range_meters"), Cal.MinRangeMeters);
+        Writer->WriteValue(TEXT("max_range_meters"), Cal.MaxRangeMeters);
+        Writer->WriteValue(TEXT("update_frequency_hz"), Cal.UpdateFrequencyHz);
+        Writer->WriteValue(TEXT("rays_per_tick"), Cal.RaysPerTick);
+        const FTransform FluTransform = FCoordinateConverter::UnrealToFrontLeftUpTransform(Cal.SensorToEgo);
+        const FVector T = FluTransform.GetLocation();
+        const FQuat Q = FluTransform.GetRotation();
+        Writer->WriteValue(TEXT("sensor_to_ego_tx"), T.X);
+        Writer->WriteValue(TEXT("sensor_to_ego_ty"), T.Y);
+        Writer->WriteValue(TEXT("sensor_to_ego_tz"), T.Z);
+        Writer->WriteValue(TEXT("sensor_to_ego_qw"), Q.W);
+        Writer->WriteValue(TEXT("sensor_to_ego_qx"), Q.X);
+        Writer->WriteValue(TEXT("sensor_to_ego_qy"), Q.Y);
+        Writer->WriteValue(TEXT("sensor_to_ego_qz"), Q.Z);
+        Writer->WriteObjectEnd();
+    }
     Writer->WriteArrayEnd();
     Writer->WriteObjectEnd();
     Writer->Close();

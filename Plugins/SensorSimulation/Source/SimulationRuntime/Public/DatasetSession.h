@@ -47,6 +47,8 @@ public:
 
     /** 注册或更新单个相机通道标定，会话结束时按 ChannelGuid 分别写入 calibration.json。 */
     void RegisterCalibration(const FCalibration& Calibration);
+    /** 注册或更新一台 LiDAR 的外参与扫描配置。 */
+    void RegisterLidarCalibration(const FLidarCalibration& Calibration);
     /** 注册或更新 Camera Rig 的 Renderer 指标；会话结束时写入 metadata.json。 */
     void RegisterRendererMetrics(const FCameraRendererMetricsSnapshot& Metrics);
 
@@ -77,6 +79,8 @@ private:
 
     /** 已注册的逐通道相机标定参数。 */
     TArray<FCalibration> Calibrations;
+    /** 按 SensorGuid 保存的 LiDAR 标定和扫描参数。 */
+    TArray<FLidarCalibration> LidarCalibrations;
     /** 每台 Camera Rig 的最新 Renderer 指标快照。 */
     TArray<FCameraRendererMetricsSnapshot> RendererMetrics;
 };

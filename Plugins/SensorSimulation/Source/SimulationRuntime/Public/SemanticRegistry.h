@@ -19,6 +19,8 @@ public:
     void Reset();
     /** 收集当前注册对象可由 8 位 Semantic 图像编码的合法标签集合。 */
     void GetImageSemanticIds(TSet<uint8>& OutIds) const;
+    /** 收集背景 0 与 LiDAR 可编码的完整 16 位语义标签集合。 */
+    void GetLidarSemanticIds(TSet<uint16>& OutIds) const;
     /** 收集背景 0 与当前注册对象的完整 32 位合法 InstanceId 集合。 */
     void GetInstanceIds(TSet<uint32>& OutIds) const;
 

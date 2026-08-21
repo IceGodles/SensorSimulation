@@ -140,6 +140,22 @@ struct FCalibration
     double Cy = 0.0;
 };
 
+/** LiDAR 的外参、扫描几何和正式磁盘协议快照。 */
+struct FLidarCalibration
+{
+    FName SensorName = NAME_None;
+    FGuid SensorGuid;
+    FTransform SensorToEgo = FTransform::Identity;
+    int32 Channels = 0;
+    int32 HorizontalSamples = 0;
+    float VerticalFovUpperDegrees = 0.0f;
+    float VerticalFovLowerDegrees = 0.0f;
+    float MinRangeMeters = 0.0f;
+    float MaxRangeMeters = 0.0f;
+    float UpdateFrequencyHz = 0.0f;
+    int32 RaysPerTick = 0;
+};
+
 /** 从渲染目标读回的 CPU 图像数据。 */
 struct FImagePayload
 {

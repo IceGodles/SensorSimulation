@@ -18,6 +18,7 @@ void USimLidarSensorComponent::BeginPlay()
 {
     Super::BeginPlay();
     RebuildPattern();
+    RegisterCurrentCalibration();
 }
 
 /** 根据当前雷达配置重新生成局部扫描射线。 */
@@ -29,6 +30,30 @@ void USimLidarSensorComponent::RebuildPattern()
     Pattern.VerticalFovUpperDegrees = Config.VerticalFovUpperDegrees;
     Pattern.VerticalFovLowerDegrees = Config.VerticalFovLowerDegrees;
     Pattern.BuildDirections(LocalRayDirections);
+}
+
+void USimLidarSensorComponent::RegisterCurrentCalibration()
+{
+    if (!GetWorld())
+    {
+        return;
+    }
+    if (USimulationSubsystem* Subsystem = GetWorld()->GetSubsystem<USimulationSubsystem>())
+    {
+        FLidarCalibration Calibration;
+        Calibration.SensorName = SensorName;
+        Calibration.SensorGuid = SensorGuid;
+        Calibration.SensorToEgo = Config.SensorToOwner;
+        Calibration.Channels = Config.Channels;
+        Calibration.HorizontalSamples = Config.HorizontalSamples;
+        Calibration.VerticalFovUpperDegrees = Config.VerticalFovUpperDegrees;
+        Calibration.VerticalFovLowerDegrees = Config.VerticalFovLowerDegrees;
+        Calibration.MinRangeMeters = Config.MinRangeMeters;
+        Calibration.MaxRangeMeters = Config.MaxRangeMeters;
+        Calibration.UpdateFrequencyHz = UpdateFrequencyHz;
+        Calibration.RaysPerTick = Config.RaysPerTick;
+        Subsystem->RegisterLidarCalibration(Calibration);
+    }
 }
 
 /** 在传感器空闲且启用时初始化一次新的采集任务。 */
@@ -48,7 +73,7 @@ ECaptureRequestResult USimLidarSensorComponent::RequestCapture(const FCaptureReq
     ActiveScan.Header = Request.Header;
     ActiveScan.SensorName = Request.SensorName;
     ActiveScan.SensorGuid = Request.SensorGuid;
-    ActiveScan.SensorToEgo = Request.SensorToEgo;
+    ActiveScan.SensorToEgo = Config.SensorToOwner;
     ActiveScan.ExpectedRayCount = static_cast<uint32>(LocalRayDirections.Num());
     ActiveScan.Points.Reserve(LocalRayDirections.Num());
     NextRayIndex = 0;
@@ -80,7 +105,7 @@ void USimLidarSensorComponent::TraceBatch()
         return;
     }
 
-    const FTransform SensorTransform = Owner->GetActorTransform();
+    const FTransform SensorTransform = Config.SensorToOwner * Owner->GetActorTransform();
     const FVector Origin = SensorTransform.GetLocation();
     // 将完整扫描分摊到多个 Tick，限制单帧物理查询量，避免大量射线造成明显卡顿。
     const int32 BatchEnd = FMath::Min(NextRayIndex + FMath::Max(1, Config.RaysPerTick), LocalRayDirections.Num());
@@ -134,8 +159,8 @@ void USimLidarSensorComponent::FinalizeScan()
     SetComponentTickEnabled(false);
     ActiveRequest.Reset();
 
-    // 先提交给 Subsystem 进行帧聚合，再广播委托。
-    // SubmitLidar 使用移动语义，调用后 ActiveScan 为空。
+    // 观察者必须看到完整扫描；广播完成后再把所有权移动到 Subsystem。
+    ScanCompleteDelegate.Broadcast(ActiveScan);
     if (UWorld* World = GetWorld())
     {
         if (USimulationSubsystem* Subsystem = World->GetSubsystem<USimulationSubsystem>())
@@ -144,6 +169,5 @@ void USimLidarSensorComponent::FinalizeScan()
         }
     }
 
-    ScanCompleteDelegate.Broadcast(ActiveScan);
 }
 

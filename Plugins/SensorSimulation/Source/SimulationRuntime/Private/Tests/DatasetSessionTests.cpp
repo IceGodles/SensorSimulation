@@ -55,6 +55,14 @@ bool FDatasetSessionCalibrationUpsertTest::RunTest(const FString& Parameters)
     // 同 GUID 注册只覆盖 RGB；同名 Semantic 必须继续保留自己的分辨率。
     Session.RegisterCalibration(UpdatedRgb);
 
+    FLidarCalibration Lidar;
+    Lidar.SensorName = TEXT("RoofLidar");
+    Lidar.SensorGuid = FGuid(10, 20, 30, 40);
+    Lidar.SensorToEgo = FTransform(FRotator(0.0, 15.0, 0.0), FVector(100.0, 25.0, 150.0));
+    Lidar.Channels = 16;
+    Lidar.HorizontalSamples = 512;
+    Session.RegisterLidarCalibration(Lidar);
+
     const FString SessionDirectory = Session.GetSessionDirectory();
     Session.Stop();
 
@@ -89,6 +97,16 @@ bool FDatasetSessionCalibrationUpsertTest::RunTest(const FString& Parameters)
             Second->GetStringField(TEXT("payload_type")), FString(TEXT("semantic")));
         TestFalse(TEXT("Each channel writes a non-empty GUID"),
             First->GetStringField(TEXT("channel_guid")).IsEmpty());
+    }
+    const TArray<TSharedPtr<FJsonValue>>& Lidars = RootObject->GetArrayField(TEXT("lidars"));
+    TestEqual(TEXT("LiDAR mount calibration is persisted"), Lidars.Num(), 1);
+    if (Lidars.Num() == 1)
+    {
+        const TSharedPtr<FJsonObject> LidarObject = Lidars[0]->AsObject();
+        TestEqual(TEXT("LiDAR channel count is persisted"),
+            LidarObject->GetIntegerField(TEXT("channels")), 16);
+        TestEqual(TEXT("LiDAR right offset is reflected into FLU left"),
+            LidarObject->GetNumberField(TEXT("sensor_to_ego_ty")), -0.25);
     }
     return true;
 }
@@ -138,6 +156,7 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
     FrameStats.LatePayloads = 3;
     FrameStats.PeakPendingFrames = 6;
     FrameStats.CapacityRejectedFrames = 4;
+    FrameStats.CancelledFrames = 5;
     FExportServiceStats ExportStats;
     ExportStats.EnqueuedFrames = 11;
     ExportStats.RejectedFrames = 2;
@@ -166,6 +185,8 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
     const TSharedPtr<FJsonObject> Statistics = RootObject->GetObjectField(TEXT("statistics"));
     TestEqual(TEXT("Timeout frame count is written"), Statistics->GetIntegerField(TEXT("timeout_frames")), 1);
     TestEqual(TEXT("Busy frame count is written"), Statistics->GetIntegerField(TEXT("busy_frames")), 1);
+    TestEqual(TEXT("Shutdown cancellation count is written"),
+        Statistics->GetIntegerField(TEXT("cancelled_frames")), 5);
     TestEqual(TEXT("Duplicate payload count is written"), Statistics->GetIntegerField(TEXT("duplicate_payloads")), 2);
     TestEqual(TEXT("Late payload count is written"), Statistics->GetIntegerField(TEXT("late_payloads")), 3);
     TestEqual(TEXT("FrameAssembler peak is written"),
@@ -178,6 +199,9 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
         Statistics->GetIntegerField(TEXT("export_committed_frames")), 9);
     TestEqual(TEXT("Export rejected count is written"),
         Statistics->GetIntegerField(TEXT("export_rejected_frames")), 2);
+    const TSharedPtr<FJsonObject> LidarSchema = RootObject->GetObjectField(TEXT("lidar_schema"));
+    TestEqual(TEXT("Extended LiDAR schema version is machine readable"),
+        LidarSchema->GetIntegerField(TEXT("extended_version")), 2);
 
     const TSharedPtr<FJsonObject> Renderer = RootObject->GetObjectField(TEXT("renderer"));
     const TArray<TSharedPtr<FJsonValue>>& Rigs = Renderer->GetArrayField(TEXT("camera_rigs"));

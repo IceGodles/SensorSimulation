@@ -39,6 +39,13 @@ TOptional<double> FSimulationScheduler::Poll(
         return SimulationSeconds;
     }
 
+    // Realtime 默认采用非阻塞节流：磁盘队列满时不再制造随后必然被拒绝的完整帧。
+    if (!bExportHasCapacity)
+    {
+        PauseReason = ESimulationSchedulerPauseReason::ExportBackpressure;
+        return {};
+    }
+
     RealtimeAccumulatorSeconds += FMath::Max(0.0, DeltaTime);
     if (RealtimeAccumulatorSeconds < FixedStepSeconds)
     {

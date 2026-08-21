@@ -44,9 +44,11 @@ public:
 /** 把完成的图像移交给帧聚合器。 */
     bool SubmitImage(FImagePayload&& Image);
 /** 把完成的点云移交给帧聚合器。 */
-    void SubmitLidar(FLidarScanPayload&& Scan);
+    bool SubmitLidar(FLidarScanPayload&& Scan);
 /** 注册单通道相机标定参数，会话结束时写入 calibration.json。 */
     void RegisterCalibration(const FCalibration& Calibration);
+    /** 注册 LiDAR 外参、扫描参数和频率快照。 */
+    void RegisterLidarCalibration(const FLidarCalibration& Calibration);
     /** 注册 Camera Rig 的最新资源与 Readback 指标，会话结束时写入 metadata.json。 */
     void RegisterRendererMetrics(const FCameraRendererMetricsSnapshot& Metrics);
 
@@ -85,4 +87,6 @@ private:
     TArray<FObjectGroundTruth> CaptureGroundTruth() const;
     /** 验证图像尺寸、紧密 RGBA8 布局以及 Semantic 标签集合与通道约束。 */
     bool ValidateImagePayload(const FImagePayload& Image) const;
+    /** 验证 LiDAR 身份、扫描进度、数值、标签集合和逐点时间单调性。 */
+    bool ValidateLidarPayload(const FLidarScanPayload& Scan) const;
 };
