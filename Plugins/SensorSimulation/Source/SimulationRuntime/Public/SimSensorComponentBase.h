@@ -44,6 +44,10 @@ public:
     virtual TArray<FExpectedImageChannel> GetExpectedImageChannels() const { return {}; }
     /** 在传感器空闲且启用时初始化一次新的采集任务。 */
     virtual ECaptureRequestResult RequestCapture(const FCaptureRequest& Request) PURE_VIRTUAL(USimSensorComponentBase::RequestCapture, return ECaptureRequestResult::Rejected;);
+    /** 关停阶段停止产生新工作、提交已经完成的 CPU Payload，并取消剩余在途任务。 */
+    virtual void PrepareForShutdown() { bSensorEnabled = false; }
+    /** 返回当前仍可能产生 Payload 的在途任务数量，用于关停诊断。 */
+    virtual int32 GetInFlightCaptureCount() const { return 0; }
 
 protected:
     /** 为旧资产或新建组件补齐身份；已有合法 GUID 永不因改名而变化。 */

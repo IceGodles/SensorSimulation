@@ -43,7 +43,7 @@ public:
     /** 启动新的采集会话，创建输出目录。返回是否成功。 */
     bool Start(const FString& BaseRoot, const FString& SessionName = TEXT(""));
     /** 停止当前会话，写入 metadata.json 和 calibration.json。 */
-    void Stop();
+    bool Stop();
 
     /** 注册或更新单个相机通道标定，会话结束时按 ChannelGuid 分别写入 calibration.json。 */
     void RegisterCalibration(const FCalibration& Calibration);
@@ -60,13 +60,15 @@ public:
     FString GetSessionId() const { return SessionId; }
 
     /** 写入 metadata.json，包含会话配置、帧终态和异常 Payload 统计。 */
-    void WriteMetadata(const FFrameAssemblerStats& FrameStats,
+    bool WriteMetadata(const FFrameAssemblerStats& FrameStats,
                        const FExportServiceStats& ExportStats,
                        int32 Seed, const FString& Mode);
 
 private:
     /** 将已注册的逐通道相机标定写入 calibration.json。 */
-    void WriteCalibrationJson() const;
+    bool WriteCalibrationJson() const;
+    /** 先写同目录临时文件，再原子替换最终文件。 */
+    static bool WriteTextFileAtomically(const FString& FinalPath, const FString& Contents);
     /** 生成唯一的会话标识符。 */
     static FString GenerateSessionId();
     /** 生成带时间戳的目录名。 */
@@ -76,6 +78,8 @@ private:
     FString SessionId;
     FString SessionDirectory;
     FDateTime StartTime;
+    bool bMetadataWritten = false;
+    bool bConsistencyPassed = false;
 
     /** 已注册的逐通道相机标定参数。 */
     TArray<FCalibration> Calibrations;

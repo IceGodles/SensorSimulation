@@ -64,6 +64,7 @@ bool FDatasetSessionCalibrationUpsertTest::RunTest(const FString& Parameters)
     Session.RegisterLidarCalibration(Lidar);
 
     const FString SessionDirectory = Session.GetSessionDirectory();
+    Session.WriteMetadata(FFrameAssemblerStats{}, FExportServiceStats{}, 42, TEXT("Test"));
     Session.Stop();
 
     FString JsonText;
@@ -108,6 +109,12 @@ bool FDatasetSessionCalibrationUpsertTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("LiDAR right offset is reflected into FLU left"),
             LidarObject->GetNumberField(TEXT("sensor_to_ego_ty")), -0.25);
     }
+    TestTrue(TEXT("Consistent session receives a final completion marker"),
+        IFileManager::Get().FileExists(*(SessionDirectory / TEXT("COMPLETED"))));
+    TestFalse(TEXT("Atomic metadata commit leaves no temporary file"),
+        IFileManager::Get().FileExists(*(SessionDirectory / TEXT("metadata.json.tmp"))));
+    TestFalse(TEXT("Atomic calibration commit leaves no temporary file"),
+        IFileManager::Get().FileExists(*(SessionDirectory / TEXT("calibration.json.tmp"))));
     return true;
 }
 
@@ -158,9 +165,9 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
     FrameStats.CapacityRejectedFrames = 4;
     FrameStats.CancelledFrames = 5;
     FExportServiceStats ExportStats;
-    ExportStats.EnqueuedFrames = 11;
+    ExportStats.EnqueuedFrames = 10;
     ExportStats.RejectedFrames = 2;
-    ExportStats.DroppedFrames = 1;
+    ExportStats.DroppedFrames = 0;
     ExportStats.CommittedFrames = 9;
     ExportStats.FailedFrames = 1;
     ExportStats.PeakPendingFrames = 7;
@@ -199,6 +206,8 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
         Statistics->GetIntegerField(TEXT("export_committed_frames")), 9);
     TestEqual(TEXT("Export rejected count is written"),
         Statistics->GetIntegerField(TEXT("export_rejected_frames")), 2);
+    TestTrue(TEXT("Terminal statistics conservation is machine readable"),
+        RootObject->GetObjectField(TEXT("consistency"))->GetBoolField(TEXT("passed")));
     const TSharedPtr<FJsonObject> LidarSchema = RootObject->GetObjectField(TEXT("lidar_schema"));
     TestEqual(TEXT("Extended LiDAR schema version is machine readable"),
         LidarSchema->GetIntegerField(TEXT("extended_version")), 2);
@@ -229,6 +238,34 @@ bool FDatasetSessionRendererMetricsTest::RunTest(const FString& Parameters)
                 Channels[0]->AsObject()->GetIntegerField(TEXT("delivered")), 12);
         }
     }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FDatasetSessionRejectsInconsistentFinalizationTest,
+    "SensorSimulation.Lifecycle.DatasetSession.InconsistentSessionHasNoCompletionMarker",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDatasetSessionRejectsInconsistentFinalizationTest::RunTest(const FString& Parameters)
+{
+    const FString OutputRoot = FPaths::Combine(
+        FPaths::ProjectSavedDir(), TEXT("Automation"), TEXT("SensorSimulation"), TEXT("InconsistentSession"));
+    IFileManager::Get().DeleteDirectory(*OutputRoot, false, true);
+    FDatasetSession Session;
+    if (!TestTrue(TEXT("Dataset session starts"), Session.Start(OutputRoot, TEXT("Inconsistent"))))
+    {
+        return false;
+    }
+    FFrameAssemblerStats FrameStats;
+    FrameStats.TotalFrames = 1;
+    FrameStats.CompletedFrames = 1;
+    FExportServiceStats ExportStats;
+    Session.WriteMetadata(FrameStats, ExportStats, 42, TEXT("Test"));
+    const FString SessionDirectory = Session.GetSessionDirectory();
+    AddExpectedError(TEXT("finalized=0"), EAutomationExpectedErrorFlags::Contains, 1);
+    TestFalse(TEXT("Inconsistent terminal counts reject Session finalization"), Session.Stop());
+    TestFalse(TEXT("Inconsistent Session has no completion marker"),
+        IFileManager::Get().FileExists(*(SessionDirectory / TEXT("COMPLETED"))));
     return true;
 }
 

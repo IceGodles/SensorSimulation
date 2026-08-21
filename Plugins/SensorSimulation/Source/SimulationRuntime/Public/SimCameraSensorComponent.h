@@ -32,12 +32,16 @@ public:
     virtual TArray<FExpectedImageChannel> GetExpectedImageChannels() const override;
     /** 把同步帧请求转发给 Camera Rig。 */
     virtual ECaptureRequestResult RequestCapture(const FCaptureRequest& Request) override;
+    virtual void PrepareForShutdown() override;
+    virtual int32 GetInFlightCaptureCount() const override;
 
 private:
     /** 把每条正式图像通道的最新内外参分别更新到 Dataset Session。 */
     void RegisterCurrentCalibration();
     /** 把 Camera Rig 的资源、Readback 与按通道延迟快照更新到 Dataset Session。 */
     void RegisterCurrentRendererMetrics();
+    /** 排出 Readback Manager 已经完成并拥有独立 CPU 内存的图像。 */
+    void DrainCompletedImages();
     /** 控制指标采样频率，避免每帧构造并锁定完整统计快照。 */
     double RendererMetricsElapsedSeconds = 0.0;
 };

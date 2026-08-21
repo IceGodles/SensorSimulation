@@ -78,6 +78,8 @@ private:
     FSimulationScheduler Scheduler;
     /** 会话单调时钟起点，仅用于真实等待超时，不参与确定性采样时间戳。 */
     double SessionStartPlatformSeconds = 0.0;
+    /** 达到自动化目标后停止产生新帧，并只请求一次正常进程退出。 */
+    bool bShutdownRequested = false;
 
 /** 创建同步帧、采集真值并向所有启用的传感器下发请求。 */
     void RequestFrame(double TimestampSeconds, double CreationTimeSeconds);

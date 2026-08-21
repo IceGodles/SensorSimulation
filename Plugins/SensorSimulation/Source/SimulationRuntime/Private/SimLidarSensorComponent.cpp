@@ -171,3 +171,12 @@ void USimLidarSensorComponent::FinalizeScan()
 
 }
 
+void USimLidarSensorComponent::PrepareForShutdown()
+{
+    Super::PrepareForShutdown();
+    ActiveRequest.Reset();
+    ActiveScan = FLidarScanPayload();
+    NextRayIndex = 0;
+    SetComponentTickEnabled(false);
+}
+

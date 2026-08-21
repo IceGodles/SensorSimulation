@@ -112,12 +112,32 @@ void USimCameraSensorComponent::TickComponent(
         return;
     }
 
+    DrainCompletedImages();
+}
+
+void USimCameraSensorComponent::DrainCompletedImages()
+{
+    if (!CameraRig || !GetWorld()) return;
+    USimulationSubsystem* Subsystem = GetWorld()->GetSubsystem<USimulationSubsystem>();
+    if (!Subsystem) return;
     FImagePayload Image;
     while (CameraRig->PollCompletedImage(Image))
     {
         Subsystem->SubmitImage(MoveTemp(Image));
         Image = FImagePayload();
     }
+}
+
+void USimCameraSensorComponent::PrepareForShutdown()
+{
+    Super::PrepareForShutdown();
+    DrainCompletedImages();
+    RegisterCurrentRendererMetrics();
+}
+
+int32 USimCameraSensorComponent::GetInFlightCaptureCount() const
+{
+    return CameraRig ? CameraRig->GetImageReadbackStats().PendingCount : 0;
 }
 
 /** 返回适配器当前能够为同步帧生产的图像模态。 */

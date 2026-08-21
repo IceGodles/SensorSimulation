@@ -68,6 +68,8 @@ bool FDatasetSession::Start(const FString& BaseRoot, const FString& SessionName)
     }
 
     State = ESessionState::Running;
+    bMetadataWritten = false;
+    bConsistencyPassed = false;
     Calibrations.Reset();
     LidarCalibrations.Reset();
     RendererMetrics.Reset();
@@ -77,23 +79,41 @@ bool FDatasetSession::Start(const FString& BaseRoot, const FString& SessionName)
 }
 
 /** 停止当前会话。 */
-void FDatasetSession::Stop()
+bool FDatasetSession::Stop()
 {
     if (State != ESessionState::Running)
     {
-        return;
+        return State == ESessionState::Idle;
     }
 
     State = ESessionState::Stopping;
 
     // 写入 calibration.json
+    bool bSuccess = true;
     if (Calibrations.Num() > 0 || LidarCalibrations.Num() > 0)
     {
-        WriteCalibrationJson();
+        bSuccess = WriteCalibrationJson();
+    }
+
+    // COMPLETED 是会话唯一的可消费标志；metadata 或 calibration 任一失败都不得生成。
+    bSuccess = bSuccess && bMetadataWritten && bConsistencyPassed;
+    if (bSuccess)
+    {
+        bSuccess = WriteTextFileAtomically(
+            SessionDirectory / TEXT("COMPLETED"),
+            FString::Printf(TEXT("session_id=%s\n"), *SessionId));
     }
 
     State = ESessionState::Idle;
-    UE_LOG(LogTemp, Log, TEXT("DatasetSession stopped: %s"), *SessionId);
+    if (bSuccess)
+    {
+        UE_LOG(LogTemp, Log, TEXT("DatasetSession stopped: %s finalized=1"), *SessionId);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("DatasetSession stopped: %s finalized=0"), *SessionId);
+    }
+    return bSuccess;
 }
 
 /** 注册或更新逐通道相机标定参数。 */
@@ -146,7 +166,7 @@ void FDatasetSession::RegisterRendererMetrics(const FCameraRendererMetricsSnapsh
 }
 
 /** 写入 metadata.json。 */
-void FDatasetSession::WriteMetadata(
+bool FDatasetSession::WriteMetadata(
     const FFrameAssemblerStats& FrameStats,
     const FExportServiceStats& ExportStats,
     const int32 Seed,
@@ -154,7 +174,7 @@ void FDatasetSession::WriteMetadata(
 {
     if (SessionDirectory.IsEmpty())
     {
-        return;
+        return false;
     }
 
     FString JsonStr;
@@ -185,6 +205,19 @@ void FDatasetSession::WriteMetadata(
     Writer->WriteValue(TEXT("export_committed_frames"), ExportStats.CommittedFrames);
     Writer->WriteValue(TEXT("export_failed_frames"), ExportStats.FailedFrames);
     Writer->WriteValue(TEXT("export_peak_pending"), ExportStats.PeakPendingFrames);
+    Writer->WriteObjectEnd();
+
+    const bool bAssemblerConserved = FrameStats.TotalFrames ==
+        FrameStats.CompletedFrames + FrameStats.FailedFrames + FrameStats.TimeoutFrames;
+    const bool bExportConserved = ExportStats.EnqueuedFrames ==
+        ExportStats.CommittedFrames + ExportStats.FailedFrames + ExportStats.DroppedFrames;
+    const bool bPipelineConserved = FrameStats.CompletedFrames == ExportStats.EnqueuedFrames;
+    bConsistencyPassed = bAssemblerConserved && bExportConserved && bPipelineConserved;
+    Writer->WriteObjectStart(TEXT("consistency"));
+    Writer->WriteValue(TEXT("assembler_terminal_counts_conserved"), bAssemblerConserved);
+    Writer->WriteValue(TEXT("export_terminal_counts_conserved"), bExportConserved);
+    Writer->WriteValue(TEXT("assembled_equals_export_enqueued"), bPipelineConserved);
+    Writer->WriteValue(TEXT("passed"), bConsistencyPassed);
     Writer->WriteObjectEnd();
 
     Writer->WriteObjectStart(TEXT("lidar_schema"));
@@ -308,11 +341,12 @@ void FDatasetSession::WriteMetadata(
     Writer->Close();
 
     const FString FilePath = SessionDirectory / TEXT("metadata.json");
-    FFileHelper::SaveStringToFile(JsonStr, *FilePath);
+    bMetadataWritten = WriteTextFileAtomically(FilePath, JsonStr);
+    return bMetadataWritten;
 }
 
 /** 写入 calibration.json。 */
-void FDatasetSession::WriteCalibrationJson() const
+bool FDatasetSession::WriteCalibrationJson() const
 {
     FString JsonStr;
     TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonStr);
@@ -381,7 +415,24 @@ void FDatasetSession::WriteCalibrationJson() const
     Writer->Close();
 
     const FString FilePath = SessionDirectory / TEXT("calibration.json");
-    FFileHelper::SaveStringToFile(JsonStr, *FilePath);
+    return WriteTextFileAtomically(FilePath, JsonStr);
+}
+
+bool FDatasetSession::WriteTextFileAtomically(const FString& FinalPath, const FString& Contents)
+{
+    const FString TempPath = FinalPath + TEXT(".tmp");
+    IFileManager::Get().Delete(*TempPath, false, true, true);
+    if (!FFileHelper::SaveStringToFile(Contents, *TempPath))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to write session temporary file: %s"), *TempPath);
+        return false;
+    }
+    if (!IFileManager::Get().Move(*FinalPath, *TempPath, true, true, false, true))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to atomically commit session file: %s"), *FinalPath);
+        return false;
+    }
+    return true;
 }
 
 /** 生成唯一的会话标识符。 */

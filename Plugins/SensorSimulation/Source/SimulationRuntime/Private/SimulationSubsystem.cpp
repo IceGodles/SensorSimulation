@@ -5,9 +5,12 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformMisc.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 
 bool USimulationSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
@@ -29,11 +32,20 @@ void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     // Session 启动时只读取一次 CDO；编辑器或控制台的后续修改只影响下一次 Session。
     SettingsSnapshot = FSimulationRuntimeSettingsSnapshot::Capture(
         *GetDefault<USimulationSettings>());
+    // 命令行覆盖只影响当前 Session，避免为了自动化验收修改并提交项目 ini。
+    FParse::Value(FCommandLine::Get(), TEXT("SensorTargetCommittedFrames="),
+        SettingsSnapshot.TargetCommittedFrames);
+    FParse::Value(FCommandLine::Get(), TEXT("SensorShutdownDrainSeconds="),
+        SettingsSnapshot.ShutdownDrainTimeoutSeconds);
+    SettingsSnapshot.TargetCommittedFrames = FMath::Max<int64>(0, SettingsSnapshot.TargetCommittedFrames);
+    SettingsSnapshot.ShutdownDrainTimeoutSeconds =
+        FMath::Max(0.0, SettingsSnapshot.ShutdownDrainTimeoutSeconds);
     Scheduler.Initialize(SettingsSnapshot.SimulationMode, SettingsSnapshot.FixedStepSeconds);
     FrameAssembler.ConfigureLimits(
         SettingsSnapshot.MaxPendingAssemblyFrames,
         SettingsSnapshot.TerminalFrameHistoryCapacity);
     SessionStartPlatformSeconds = FPlatformTime::Seconds();
+    bShutdownRequested = false;
 
     if (SettingsSnapshot.SimulationMode == ESimulationMode::DeterministicDataset)
     {
@@ -55,18 +67,28 @@ void USimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 /** 清空传感器和语义状态后反初始化子系统。 */
 void USimulationSubsystem::Deinitialize()
 {
-    // 停止调度后，先把已经完整的帧全部移交 Export；允许 Worker 在关停屏障内释放容量。
+    bShutdownRequested = true;
+    // 先关闭所有传感器入口；反复排出已经进入 CPU 完成队列的载荷，直到全部终态或超时。
+    for (const TWeakObjectPtr<USimSensorComponentBase>& Sensor : Sensors)
+    {
+        if (Sensor.IsValid()) Sensor->PrepareForShutdown();
+    }
     if (ExportService)
     {
-        const double DrainDeadline = FPlatformTime::Seconds() + 2.0;
-        while (FrameAssembler.GetCompleteFrameCount() > 0
-            && FPlatformTime::Seconds() < DrainDeadline)
+        const double DrainDeadline = FPlatformTime::Seconds()
+            + SettingsSnapshot.ShutdownDrainTimeoutSeconds;
+        while (FPlatformTime::Seconds() < DrainDeadline)
         {
-            FlushCompleteFramesToExport();
-            if (FrameAssembler.GetCompleteFrameCount() > 0)
+            int32 InFlightSensorJobs = 0;
+            for (const TWeakObjectPtr<USimSensorComponentBase>& Sensor : Sensors)
             {
-                FPlatformProcess::SleepNoStats(0.001f);
+                if (!Sensor.IsValid()) continue;
+                Sensor->PrepareForShutdown();
+                InFlightSensorJobs += Sensor->GetInFlightCaptureCount();
             }
+            FlushCompleteFramesToExport();
+            if (InFlightSensorJobs == 0 && FrameAssembler.GetPendingFrameCount() == 0) break;
+            FPlatformProcess::SleepNoStats(0.001f);
         }
         // 仍在等待 Sensor/GPU 的帧无法在 World 销毁后安全完成，进入显式 Cancelled 终态。
         FrameAssembler.CancelAllPendingFrames();
@@ -98,15 +120,41 @@ void USimulationSubsystem::Deinitialize()
 /** 在游戏线程安全点泵送独立调度器、超时和完整帧导出。 */
 void USimulationSubsystem::Tick(const float DeltaTime)
 {
+    if (bShutdownRequested) return;
     const double SessionElapsedSeconds = FPlatformTime::Seconds() - SessionStartPlatformSeconds;
 
     // 确定性模式仅在 Export 有容量时 Pop；满载时完整帧继续由 FrameAssembler 持有。
     FlushCompleteFramesToExport();
 
+    if (SettingsSnapshot.TargetCommittedFrames > 0 && ExportService
+        && ExportService->GetExportedFrameCount() >= SettingsSnapshot.TargetCommittedFrames)
+    {
+        bShutdownRequested = true;
+        UE_LOG(LogTemp, Log, TEXT("Target committed frame count reached: %lld"),
+            SettingsSnapshot.TargetCommittedFrames);
+        if (GetWorld() && GetWorld()->WorldType == EWorldType::Game)
+        {
+            FPlatformMisc::RequestExit(false);
+        }
+        return;
+    }
+
     // 超时使用会话单调时钟，不依赖确定性时间轴是否因背压暂停。
     FrameAssembler.PurgeTimedOutFrames(
         SessionElapsedSeconds,
         SettingsSnapshot.FrameTimeoutSeconds);
+
+    // 只允许产生刚好足以达到目标的在途帧；失败/超时释放名额后会继续补采。
+    if (SettingsSnapshot.TargetCommittedFrames > 0 && ExportService)
+    {
+        const int64 PotentialCommittedFrames = ExportService->GetExportedFrameCount()
+            + ExportService->GetPendingCount()
+            + FrameAssembler.GetPendingFrameCount();
+        if (PotentialCommittedFrames >= SettingsSnapshot.TargetCommittedFrames)
+        {
+            return;
+        }
+    }
 
     const bool bFramePipelineIdle = FrameAssembler.GetPendingFrameCount() == 0;
     const bool bExportHasCapacity = !ExportService || ExportService->HasCapacity();

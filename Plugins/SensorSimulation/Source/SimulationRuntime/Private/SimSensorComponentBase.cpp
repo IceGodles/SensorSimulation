@@ -68,6 +68,7 @@ void USimSensorComponentBase::BeginPlay()
 /** 在组件停止运行时注销自身并释放关联关系。 */
 void USimSensorComponentBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    PrepareForShutdown();
     if (UWorld* World = GetWorld())
     {
         if (USimulationSubsystem* Subsystem = World->GetSubsystem<USimulationSubsystem>())

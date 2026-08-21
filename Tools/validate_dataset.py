@@ -85,7 +85,8 @@ def validate_semantic_image(path: Path, valid_ids: Set[int]) -> Tuple[bool, str]
     except ImportError:
         return True, "Pillow unavailable; pixel validation skipped"
     image = Image.open(path).convert("RGBA")
-    for index, (r, g, b, a) in enumerate(image.getdata()):
+    pixels = image.get_flattened_data() if hasattr(image, "get_flattened_data") else image.getdata()
+    for index, (r, g, b, a) in enumerate(pixels):
         if r not in valid_ids or g != 0 or b != 0 or a != 255:
             return False, f"invalid RGBA at linear pixel {index}: {(r, g, b, a)}"
     return True, f"all {image.width * image.height} pixels valid"
@@ -114,11 +115,16 @@ def main() -> int:
     metadata = load_json(metadata_path) if metadata_path.exists() else {}
     if not metadata_path.exists(): errors.append("metadata.json missing")
     if not calibration_path.exists(): errors.append("calibration.json missing")
+    if not (session_dir / "COMPLETED").exists(): errors.append("COMPLETED session marker missing")
+    if metadata and not metadata.get("consistency", {}).get("passed", False):
+        errors.append("metadata consistency checks did not pass")
     frame_dirs = find_frame_dirs(session_dir)
     committed = int(metadata.get("statistics", {}).get("export_committed_frames", len(frame_dirs)))
     if committed != len(frame_dirs): errors.append(f"committed={committed} but frame directories={len(frame_dirs)}")
     temp_dirs = list(session_dir.glob("frame_*.tmp"))
     if temp_dirs: errors.append(f"{len(temp_dirs)} temporary frame directories remain")
+    temp_files = list(session_dir.glob("*.tmp"))
+    if temp_files: errors.append(f"{len(temp_files)} temporary session files remain")
     valid_ids = {int(value) for value in args.semantic_ids.split(",")} if args.semantic_ids else derive_semantic_ids(frame_dirs)
     total_points = semantic_images = lidar_files = 0
     frame_ids: List[int] = []

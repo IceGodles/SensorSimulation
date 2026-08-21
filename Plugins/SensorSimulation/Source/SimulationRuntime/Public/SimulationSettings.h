@@ -43,6 +43,14 @@ public:
     UPROPERTY(Config, EditAnywhere, Category="Deterministic")
     int32 RandomSeed = 42;
 
+    /** 大于 0 时，在达到指定磁盘提交帧数后请求进程正常退出；主要用于命令行验收。 */
+    UPROPERTY(Config, EditAnywhere, Category="Automation", meta=(ClampMin="0"))
+    int64 TargetCommittedFrames = 0;
+
+    /** 关停时允许 CPU 已完成载荷进入聚合/导出队列的最长时间。 */
+    UPROPERTY(Config, EditAnywhere, Category="Lifecycle", meta=(ClampMin="0.0"))
+    double ShutdownDrainTimeoutSeconds = 2.0;
+
     /** 将配置目录解析为稳定绝对路径：空值和相对值均锚定 Project/Saved。 */
     static FString ResolveDatasetRoot(const FDirectoryPath& ConfiguredRoot);
 };
@@ -58,6 +66,8 @@ struct SIMULATIONRUNTIME_API FSimulationRuntimeSettingsSnapshot
     FString DatasetRoot;
     double FrameTimeoutSeconds = 2.0;
     int32 RandomSeed = 42;
+    int64 TargetCommittedFrames = 0;
+    double ShutdownDrainTimeoutSeconds = 2.0;
 
     /** 从 Settings 对象捕获一份值语义快照。 */
     static FSimulationRuntimeSettingsSnapshot Capture(const USimulationSettings& Settings);

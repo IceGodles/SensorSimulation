@@ -49,5 +49,7 @@ FSimulationRuntimeSettingsSnapshot FSimulationRuntimeSettingsSnapshot::Capture(
     Snapshot.DatasetRoot = USimulationSettings::ResolveDatasetRoot(Settings.DatasetRoot);
     Snapshot.FrameTimeoutSeconds = FMath::Max(0.1, Settings.FrameTimeoutSeconds);
     Snapshot.RandomSeed = Settings.RandomSeed;
+    Snapshot.TargetCommittedFrames = FMath::Max<int64>(0, Settings.TargetCommittedFrames);
+    Snapshot.ShutdownDrainTimeoutSeconds = FMath::Max(0.0, Settings.ShutdownDrainTimeoutSeconds);
     return Snapshot;
 }
