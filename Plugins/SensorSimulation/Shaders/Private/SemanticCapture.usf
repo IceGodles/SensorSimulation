@@ -17,6 +17,10 @@ void MainPS(
     const uint2 PixelPos = uint2(View.ViewRectMin.xy) + min(
         uint2(UVAndScreenPos.xy * float2(ViewSize)),
         ViewSize - 1);
-    const uint SemanticId = CalcSceneCustomStencil(PixelPos);
+    // On D3D12 the stencil plane may read its clear value as 255 even when no
+    // primitive wrote CustomDepth. Use the paired depth plane as the validity
+    // mask so background remains ID 0 without sacrificing legitimate class 255.
+    const float CustomDeviceZ = SceneTexturesStruct.CustomDepthTexture.Load(uint3(PixelPos, 0)).r;
+    const uint SemanticId = CustomDeviceZ > 0.0f ? CalcSceneCustomStencil(PixelPos) : 0u;
     OutColor = float4(float(SemanticId) / 255.0f, 0.0f, 0.0f, 1.0f);
 }

@@ -38,6 +38,7 @@ bool FDatasetSessionCalibrationUpsertTest::RunTest(const FString& Parameters)
     Rgb.ImageSize = FIntPoint(320, 180);
     Rgb.Fx = 160.0;
     Rgb.Fy = 160.0;
+    Rgb.SensorToEgo = FTransform(FRotator::ZeroRotator, FVector(150.0, 25.0, 140.0));
     Session.RegisterCalibration(Rgb);
 
     FCalibration Semantic = Rgb;
@@ -98,6 +99,12 @@ bool FDatasetSessionCalibrationUpsertTest::RunTest(const FString& Parameters)
             Second->GetStringField(TEXT("payload_type")), FString(TEXT("semantic")));
         TestFalse(TEXT("Each channel writes a non-empty GUID"),
             First->GetStringField(TEXT("channel_guid")).IsEmpty());
+        TestEqual(TEXT("Camera forward mount is converted from centimeters to meters"),
+            First->GetNumberField(TEXT("sensor_to_ego_tx")), 1.5);
+        TestEqual(TEXT("Camera right mount is reflected into FLU left"),
+            First->GetNumberField(TEXT("sensor_to_ego_ty")), -0.25);
+        TestEqual(TEXT("Camera height is converted from centimeters to meters"),
+            First->GetNumberField(TEXT("sensor_to_ego_tz")), 1.4);
     }
     const TArray<TSharedPtr<FJsonValue>>& Lidars = RootObject->GetArrayField(TEXT("lidars"));
     TestEqual(TEXT("LiDAR mount calibration is persisted"), Lidars.Num(), 1);

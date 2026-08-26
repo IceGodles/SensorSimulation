@@ -62,6 +62,7 @@ void USimCameraSensorComponent::RegisterCurrentCalibration()
             for (FCalibration Calibration : CameraRig->BuildActiveCalibrations())
             {
                 Calibration.SensorGuid = SensorGuid;
+                Calibration.SensorToEgo = ResolveSensorToOwner();
                 Subsystem->RegisterCalibration(Calibration);
             }
         }
@@ -167,7 +168,7 @@ ECaptureRequestResult USimCameraSensorComponent::RequestCapture(const FCaptureRe
     FCaptureRequest CameraRequest = Request;
     CameraRequest.SensorName = SensorName;
     CameraRequest.SensorGuid = SensorGuid;
-    CameraRequest.SensorToEgo = CameraRig->GetRelativeTransform();
+    CameraRequest.SensorToEgo = ResolveSensorToOwner();
     CameraRequest.ExpectedPayloads &= CameraRig->GetEnabledPayloadTypes();
     const TArray<FExpectedImageChannel> ActiveChannels = CameraRig->GetEnabledImageChannels();
     CameraRequest.ExpectedImageChannels.RemoveAll(
@@ -176,4 +177,14 @@ ECaptureRequestResult USimCameraSensorComponent::RequestCapture(const FCaptureRe
             return !ActiveChannels.Contains(Expected);
         });
     return CameraRig->SubmitCapture(CameraRequest);
+}
+
+FTransform USimCameraSensorComponent::ResolveSensorToOwner() const
+{
+    const AActor* Owner = GetOwner();
+    if (CameraRig && Owner && CameraRig->GetOwner() == Owner)
+    {
+        return CameraRig->GetComponentTransform().GetRelativeTransform(Owner->GetActorTransform());
+    }
+    return FTransform::Identity;
 }

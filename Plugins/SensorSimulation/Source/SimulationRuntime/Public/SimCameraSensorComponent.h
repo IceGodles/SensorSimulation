@@ -42,6 +42,8 @@ private:
     void RegisterCurrentRendererMetrics();
     /** 排出 Readback Manager 已经完成并拥有独立 CPU 内存的图像。 */
     void DrainCompletedImages();
+    /** 累计 CameraRig 的完整组件层级，返回相对于所属 Ego Actor 的安装外参。 */
+    FTransform ResolveSensorToOwner() const;
     /** 控制指标采样频率，避免每帧构造并锁定完整统计快照。 */
     double RendererMetricsElapsedSeconds = 0.0;
 };

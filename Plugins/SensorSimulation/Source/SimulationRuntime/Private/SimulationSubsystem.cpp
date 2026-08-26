@@ -421,6 +421,15 @@ bool USimulationSubsystem::ValidateImagePayload(const FImagePayload& Image) cons
                 || Image.Bytes[PixelOffset + 2] != 0
                 || Image.Bytes[PixelOffset + 3] != 255)
             {
+                UE_LOG(LogTemp, Error,
+                    TEXT("Invalid semantic texel: frame=%llu pixel=%lld rgba=(%u,%u,%u,%u) valid_ids=%d."),
+                    Image.Header.FrameId,
+                    PixelOffset / 4,
+                    static_cast<uint32>(Image.Bytes[PixelOffset + 0]),
+                    static_cast<uint32>(Image.Bytes[PixelOffset + 1]),
+                    static_cast<uint32>(Image.Bytes[PixelOffset + 2]),
+                    static_cast<uint32>(Image.Bytes[PixelOffset + 3]),
+                    ValidIds.Num());
                 return false;
             }
         }

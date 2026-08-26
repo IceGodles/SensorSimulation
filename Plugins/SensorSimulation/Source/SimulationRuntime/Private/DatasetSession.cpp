@@ -402,12 +402,13 @@ bool FDatasetSession::WriteCalibrationJson() const
         Writer->WriteValue(TEXT("cx"), Cal.Cx);
         Writer->WriteValue(TEXT("cy"), Cal.Cy);
 
-        const FVector T = Cal.SensorToEgo.GetLocation();
+        const FTransform FluTransform = FCoordinateConverter::UnrealToFrontLeftUpTransform(Cal.SensorToEgo);
+        const FVector T = FluTransform.GetLocation();
         Writer->WriteValue(TEXT("sensor_to_ego_tx"), T.X);
         Writer->WriteValue(TEXT("sensor_to_ego_ty"), T.Y);
         Writer->WriteValue(TEXT("sensor_to_ego_tz"), T.Z);
 
-        const FQuat Q = Cal.SensorToEgo.GetRotation();
+        const FQuat Q = FluTransform.GetRotation();
         Writer->WriteValue(TEXT("sensor_to_ego_qw"), Q.W);
         Writer->WriteValue(TEXT("sensor_to_ego_qx"), Q.X);
         Writer->WriteValue(TEXT("sensor_to_ego_qy"), Q.Y);

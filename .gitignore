@@ -6,5 +6,6 @@ Saved/
 .idea/
 *.sln
 Dataset/
+/Content/Downtown_West/
 Plugins/*/Binaries/
 Plugins/*/Intermediate/
